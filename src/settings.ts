@@ -16,6 +16,7 @@ export interface Settings extends OpticsParams {
   fxRatio: number;              // 焦点距離（ピクセル）÷ 映像の長辺
   flipX: boolean;               // カメラ映像の左右の向き
   calibD: number;               // 距離校正で使う実測距離（mm）
+  gain: number;                 // 感度（横方向のずれの倍率。1.0 が物理的に正しい値）
   showCam: boolean;
   showDot: boolean;
 }
@@ -26,7 +27,7 @@ export const DEFAULTS: Settings = {
   lat: 35, spd: 12, pattern: 0, corr: true, spin: true,
   cal: null,
   track: false, eyeMode: "mid",
-  camX: 0, camY: 50, fxRatio: 0.57, flipX: false, calibD: 300,
+  camX: 0, camY: 50, fxRatio: 0.57, flipX: false, calibD: 300, gain: 1,
   showCam: false, showDot: true,
 };
 

@@ -26,7 +26,7 @@ export interface Mesh {
 }
 
 export const N_GLASS = 1.5;
-const NA = 180, NP = 256;
+export const NA = 180, NP = 256;
 
 export interface DomeGeometry { a: number; h: number; R: number; zb: number; cz: number; amax: number; }
 

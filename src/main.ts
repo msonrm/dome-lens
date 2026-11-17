@@ -1,7 +1,8 @@
 import "./style.css";
-import { buildMesh, eyeFromAngles, type Mesh, type Vec3 } from "./optics";
+import { eyeFromAngles, type Vec3 } from "./optics";
 import { Renderer } from "./renderer";
-import { FaceTracker, IRIS_MM, type FaceObs } from "./tracker";
+import { EyeDetector } from "./detector";
+import { IRIS_MM, type FaceObs } from "./face";
 import { OneEuro } from "./filter";
 import { DEFAULTS, load, save, type Settings, type EyeMode } from "./settings";
 
@@ -65,9 +66,10 @@ canvas.addEventListener("pointercancel", up);
 
 // ---------- カメラ追跡 ----------
 const video = $<HTMLVideoElement>("cam");
-const tracker = new FaceTracker(video);
-const filt = [new OneEuro(1.0, 0.03), new OneEuro(1.0, 0.03), new OneEuro(1.0, 0.03)];
-let trackedEye: Vec3 | null = null;
+const detector = new EyeDetector(video);
+const filt = [new OneEuro(0.6, 0.02), new OneEuro(0.6, 0.02), new OneEuro(0.3, 0.01)];
+let targetEye: Vec3 | null = null;   // 検出ごとに更新される目の位置（フィルタ後）
+let shownEye: Vec3 | null = null;    // 描画に使う目の位置（毎フレーム targetEye へ滑らかに近づける）
 let lastObs: FaceObs | null = null;
 let trackStatus = "";
 
@@ -87,32 +89,40 @@ function eyesFromObs(o: FaceObs): { mid: Vec3; left: Vec3; right: Vec3 } {
   return { mid, left, right };
 }
 
+detector.onStatus = st => { trackStatus = st; };
+detector.onObs = (o, t) => {
+  if (!o) { trackStatus = "顔が見つかりません"; return; }
+  trackStatus = "追跡中";
+  lastObs = o;
+  const e = eyesFromObs(o)[S.eyeMode];
+  const ts = t / 1000;
+  targetEye = { x: filt[0].filter(e.x, ts), y: filt[1].filter(e.y, ts), z: filt[2].filter(e.z, ts) };
+};
+
 async function startTracking() {
   try {
-    await tracker.start(s => { trackStatus = s; });
+    filt.forEach(f => f.reset()); targetEye = null; shownEye = null;
+    await detector.start();
     S.track = true;
-    filt.forEach(f => f.reset());
   } catch (e) {
     S.track = false;
     trackStatus = "カメラを起動できませんでした：" + (e instanceof Error ? e.message : String(e));
-    tracker.stop();
+    detector.stop();
   }
   syncInputs();
 }
 function stopTracking() {
-  tracker.stop(); S.track = false; trackedEye = null; trackStatus = ""; syncInputs();
+  detector.stop(); S.track = false; targetEye = null; shownEye = null; trackStatus = ""; syncInputs();
 }
 
 // ---------- UI ----------
 const units: Record<string, string> = {
   d: "mm", h: "mm", n: "", gap: "mm", glass: "mm", D: "mm", tilt: "°", az: "°", lat: "°", spd: "°/s",
-  camX: "mm", camY: "mm", calibD: "mm",
+  camX: "mm", camY: "mm", calibD: "mm", gain: "×",
 };
-const meshKeys = new Set(["d", "h", "n", "gap", "glass", "D", "tilt", "az"]);
-type NumKey = "d" | "h" | "n" | "gap" | "glass" | "D" | "tilt" | "az" | "lat" | "spd" | "camX" | "camY" | "calibD";
+type NumKey = "d" | "h" | "n" | "gap" | "glass" | "D" | "tilt" | "az" | "lat" | "spd" | "camX" | "camY" | "calibD" | "gain";
 
-let meshDirty = true;
-function fmt(k: string, v: number) { return (k === "n" ? v.toFixed(2) : String(v)) + units[k]; }
+function fmt(k: string, v: number) { return (k === "n" || k === "gain" ? v.toFixed(2) : String(v)) + units[k]; }
 function toggle(id: string, on: boolean, onText: string, offText: string) {
   const b = $(id); b.classList.toggle("on", on); b.textContent = on ? onText : offText;
 }
@@ -137,14 +147,13 @@ for (const k of Object.keys(units) as NumKey[]) {
     S[k] = parseFloat((e.target as HTMLInputElement).value);
     if ((k === "d" || k === "h") && S.h > S.d / 2) S.h = S.d / 2;
     syncInputs();
-    if (meshKeys.has(k)) meshDirty = true;
     save(S);
   });
 }
-$<HTMLSelectElement>("n2").addEventListener("change", e => { S.n2 = parseFloat((e.target as HTMLSelectElement).value); meshDirty = true; save(S); });
+$<HTMLSelectElement>("n2").addEventListener("change", e => { S.n2 = parseFloat((e.target as HTMLSelectElement).value); save(S); });
 $<HTMLSelectElement>("pattern").addEventListener("change", e => { S.pattern = parseInt((e.target as HTMLSelectElement).value, 10); save(S); });
 $<HTMLSelectElement>("eyeMode").addEventListener("change", e => { S.eyeMode = (e.target as HTMLSelectElement).value as EyeMode; filt.forEach(f => f.reset()); save(S); });
-$("bCorr").onclick = () => { S.corr = !S.corr; meshDirty = true; syncInputs(); save(S); };
+$("bCorr").onclick = () => { S.corr = !S.corr; syncInputs(); save(S); };
 $("bSpin").onclick = () => { S.spin = !S.spin; syncInputs(); save(S); };
 $("bTrack").onclick = () => { if (S.track) stopTracking(); else void startTracking(); };
 $("bFlip").onclick = () => { S.flipX = !S.flipX; filt.forEach(f => f.reset()); syncInputs(); save(S); };
@@ -196,7 +205,7 @@ $<HTMLInputElement>("file").addEventListener("change", e => {
 $("bReset").onclick = () => {
   const cal = S.cal, track = S.track;
   S = { ...DEFAULTS, cal, track };
-  meshDirty = true; syncInputs(); save(S);
+  syncInputs(); save(S);
 };
 
 // 画面が消えないように（使えない環境では何もしない）
@@ -206,43 +215,20 @@ async function keepAwake() {
 document.addEventListener("visibilitychange", () => { if (document.visibilityState === "visible") void keepAwake(); });
 void keepAwake();
 
-// ---------- メッシュ計算（ワーカー、使えなければ同期） ----------
-let builtEye: Vec3 | null = null;
-let busy = false, reqId = 0;
-let worker: Worker | null = null;
-try {
-  worker = new Worker(new URL("./meshWorker.ts", import.meta.url), { type: "module" });
-  worker.onmessage = (e: MessageEvent<{ id: number; m: Mesh }>) => {
-    renderer.setMesh(e.data.m);
-    busy = false;
-  };
-  worker.onerror = () => { worker = null; busy = false; };
-} catch { worker = null; }
-
-function requestMesh(E: Vec3) {
-  const p = { d: S.d, h: S.h, n: S.n, n2: S.n2, gap: S.gap, glass: S.glass };
-  builtEye = E; meshDirty = false;
-  if (worker) { busy = true; worker.postMessage({ id: ++reqId, p, E, corrected: S.corr }); }
-  else renderer.setMesh(buildMesh(p, E, S.corr));
-}
-
 // ---------- 描画ループ ----------
 const dot = $("dot"), hud = $("hud");
 let lon = 139.7 * Math.PI / 180, prev = performance.now(), hudAt = 0;
+let frames = 0, fps = 0, fpsAt = performance.now();
 
-function currentEye(now: number): Vec3 {
-  if (S.track && tracker.running) {
-    const o = tracker.detect(now);
-    if (o) {
-      lastObs = o;
-      const e = eyesFromObs(o)[S.eyeMode];
-      const t = now / 1000;
-      trackedEye = { x: filt[0].filter(e.x, t), y: filt[1].filter(e.y, t), z: filt[2].filter(e.z, t) };
-      trackStatus = "追跡中";
-    } else if (video.readyState >= 2) {
-      trackStatus = "顔が見つかりません";
-    }
-    if (trackedEye) return trackedEye;
+function currentEye(dt: number): Vec3 {
+  if (S.track && targetEye) {
+    if (!shownEye) shownEye = { ...targetEye };
+    const a = 1 - Math.exp(-dt / 0.06);              // 約60msで追いつく
+    shownEye.x += (targetEye.x - shownEye.x) * a;
+    shownEye.y += (targetEye.y - shownEye.y) * a;
+    shownEye.z += (targetEye.z - shownEye.z) * a;
+    // 感度：ドーム中心から見た横方向のずれを拡大・縮小する（1.0 が物理的に正しい値）
+    return { x: shownEye.x * S.gain, y: shownEye.y * S.gain, z: shownEye.z };
   }
   return eyeFromAngles(S, S.D, S.tilt, S.az);
 }
@@ -250,19 +236,20 @@ function currentEye(now: number): Vec3 {
 function frame(now: number) {
   const dt = Math.min(0.1, (now - prev) / 1000); prev = now;
   if (S.spin) lon += S.spd * Math.PI / 180 * dt;
+  frames++;
+  if (now - fpsAt > 1000) { fps = frames * 1000 / (now - fpsAt); frames = 0; fpsAt = now; }
 
-  const E = currentEye(now);
-  if (!busy && (meshDirty || !builtEye || Math.hypot(E.x - builtEye.x, E.y - builtEye.y, E.z - builtEye.z) > 0.2)) {
-    requestMesh(E);
-  }
+  if (S.track) detector.tick(now);
+  const E = currentEye(dt);
 
   const ppm = pxPerMm();
   renderer.draw({
+    optics: S, eye: E, corrected: S.corr,
     centerPx: [S.cal!.cx, S.cal!.cy], pxPerMm: ppm, sizePx: [W, H],
     lat: S.lat * Math.PI / 180, lon, pattern: S.pattern,
   });
 
-  const showDot = S.track && S.showDot && trackedEye;
+  const showDot = S.track && S.showDot && targetEye;
   dot.style.display = showDot ? "block" : "none";
   if (showDot) {
     dot.style.left = (S.cal!.cx + E.x * ppm) + "px";
@@ -274,8 +261,8 @@ function frame(now: number) {
     const r = Math.hypot(E.x, E.y);
     const tilt = Math.atan2(r, E.z) * 180 / Math.PI;
     const az = (Math.atan2(E.y, E.x) * 180 / Math.PI + 360) % 360;
-    const head = S.track ? `[${trackStatus}] ` : "[手動] ";
-    hud.textContent = `${head}目 x${E.x.toFixed(0)} y${E.y.toFixed(0)} z${E.z.toFixed(0)}mm ／ 傾き${tilt.toFixed(1)}° 方向${az.toFixed(0)}°`;
+    const head = S.track ? `[${trackStatus} 検出${detector.rate.toFixed(0)}/s] ` : "[手動] ";
+    hud.textContent = `${head}描画${fps.toFixed(0)}fps ／ 目 x${E.x.toFixed(0)} y${E.y.toFixed(0)} z${E.z.toFixed(0)}mm ／ 傾き${tilt.toFixed(1)}° 方向${az.toFixed(0)}°`;
   }
   requestAnimationFrame(frame);
 }
