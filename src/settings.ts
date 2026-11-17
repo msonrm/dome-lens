@@ -32,6 +32,11 @@ export interface Settings extends OpticsParams {
   irisType: number;             // 0 茶、1 青、2 緑、3 猫
   pupil: number;                // 瞳孔の大きさ（虹彩に対する比）
   lids: boolean;                // まぶたとまばたき
+  // 床と光
+  floor: boolean;               // 方眼紙の床と影
+  shade: boolean;               // ドームの模様に陰影を付ける
+  lightAz: number;              // 光の来る方向（画面上で、右が 0°、反時計回り。左上は 135°）
+  lightElev: number;            // 光の高さ（度）
 }
 
 export const DEFAULTS: Settings = {
@@ -45,6 +50,7 @@ export const DEFAULTS: Settings = {
   levelGain: 15, levelBias: { x: 0, y: 0 }, bubbleAll: false,
   beamBearing: 0, beamElev: 20, northOffset: 0,
   irisType: 0, pupil: 0.38, lids: true,
+  floor: true, shade: true, lightAz: 135, lightElev: 40,
 };
 
 const KEY = "domeLens.v1";

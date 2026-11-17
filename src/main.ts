@@ -130,9 +130,9 @@ function stopTracking() {
 const units: Record<string, string> = {
   d: "mm", h: "mm", n: "", gap: "mm", glass: "mm", D: "mm", tilt: "°", az: "°", lat: "°", spd: "°/s",
   camX: "mm", camY: "mm", calibD: "mm", gain: "×", headDepth: "mm", levelGain: "×",
-  beamBearing: "°", beamElev: "°", northOffset: "°", pupil: "",
+  beamBearing: "°", beamElev: "°", northOffset: "°", pupil: "", lightAz: "°", lightElev: "°",
 };
-type NumKey = "d" | "h" | "n" | "gap" | "glass" | "D" | "tilt" | "az" | "lat" | "spd" | "camX" | "camY" | "calibD" | "gain" | "headDepth" | "levelGain" | "beamBearing" | "beamElev" | "northOffset" | "pupil";
+type NumKey = "d" | "h" | "n" | "gap" | "glass" | "D" | "tilt" | "az" | "lat" | "spd" | "camX" | "camY" | "calibD" | "gain" | "headDepth" | "levelGain" | "beamBearing" | "beamElev" | "northOffset" | "pupil" | "lightAz" | "lightElev";
 
 function fmt(k: string, v: number) { return (k === "n" || k === "gain" || k === "pupil" ? v.toFixed(2) : String(v)) + units[k]; }
 
@@ -191,6 +191,8 @@ function syncInputs() {
   toggle("bTilt", tiltOn, "傾きセンサー 動作中", "傾きセンサーを有効にする");
   toggle("bBubbleAll", S.bubbleAll, "他の模様にも気泡 ON", "他の模様にも気泡 OFF");
   toggle("bLids", S.lids, "まぶた ON", "まぶた OFF");
+  toggle("bFloor", S.floor, "床と影 ON", "床と影 OFF");
+  toggle("bShade", S.shade, "ドームの陰影 ON", "ドームの陰影 OFF");
   $<HTMLSelectElement>("irisType").value = String(S.irisType);
   video.style.display = S.track && S.showCam ? "block" : "none";
 }
@@ -262,6 +264,8 @@ $("bZero2").onclick = () => {
 $("bZeroReset").onclick = () => { S.levelBias = { x: 0, y: 0 }; zero1 = null; save(S); hint.textContent = "ゼロ点を初期状態に戻しました。"; };
 $<HTMLSelectElement>("irisType").addEventListener("change", e => { S.irisType = parseInt((e.target as HTMLSelectElement).value, 10); save(S); });
 $("bLids").onclick = () => { S.lids = !S.lids; syncInputs(); save(S); };
+$("bFloor").onclick = () => { S.floor = !S.floor; syncInputs(); save(S); };
+$("bShade").onclick = () => { S.shade = !S.shade; syncInputs(); save(S); };
 $("bNorthHere").onclick = () => {
   if (!tiltSensor.active) { hint.textContent = "先に「水準器」欄で傾きセンサーを有効にしてください。"; return; }
   // 今の端末上端の水平な向きが「北」になるよう補正する
@@ -351,7 +355,10 @@ function frame(now: number) {
   }
 
   const ppm = pxPerMm();
+  const la = S.lightAz * Math.PI / 180, le = S.lightElev * Math.PI / 180;
   renderer.draw({
+    light: { x: Math.cos(le) * Math.cos(la), y: Math.cos(le) * Math.sin(la), z: Math.sin(le) },
+    floor: S.floor, shade: S.shade,
     eyeball: eyeballU,
     bubble: bubbleU, ringScale: S.levelGain,
     time: now / 1000, beam: S.pattern === 5 ? beamNow() : null,

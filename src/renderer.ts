@@ -83,6 +83,7 @@ uniform float uLat, uLon; uniform int uPattern; uniform sampler2D uTex; uniform 
 uniform float uZb, uR, uCz, uTime;
 uniform vec3 uBeamDir; uniform float uBeamLen;
 uniform vec3 uGaze; uniform float uPupil; uniform int uIrisType; uniform float uLidOpen; uniform bool uLids;
+uniform bool uShade; uniform vec3 uLight;
 uniform bool uBubble; uniform vec3 uBubbleDir; uniform float uBubbleRad; uniform float uRingScale;
 out vec4 o;
 const float PI = 3.14159265;
@@ -256,6 +257,62 @@ void main(){
     bub = mix(bub, vec3(1.0), hl);
     col = mix(col, bub, inside);
   }
+  // 仮想の照明による陰影（光の指針は自ら光るので除く）
+  if (uShade && uPattern != 5) {
+    float lam = max(dot(u, normalize(uLight)), 0.0);
+    col *= 0.38 + 0.72 * lam;
+  }
+  o = vec4(col, 1.0);
+}`;
+
+// 床（方眼紙）と影：画面全体に描き、その上にドームを描く。
+// 床は画面の面にあり、ドーム（球の上半分）が床から出ているとみなす
+const FLOOR_VS = `#version 300 es
+void main(){
+  vec2 p = vec2(gl_VertexID == 1 ? 3.0 : -1.0, gl_VertexID == 2 ? 3.0 : -1.0);
+  gl_Position = vec4(p, 0.0, 1.0);
+}`;
+const FLOOR_FS = `#version 300 es
+precision highp float;
+uniform vec2 uCenter; uniform float uPxPerMm; uniform float uDpr; uniform float uCanvasH;
+uniform float uA, uR, uCz, uZb;
+uniform vec3 uLight; uniform bool uFloor;
+out vec4 o;
+float gridLine(float v, float step, float w){
+  float d = abs(fract(v / step + 0.5) - 0.5) * step;
+  return 1.0 - smoothstep(w * 0.5, w * 1.5, d);
+}
+void main(){
+  if (!uFloor) { o = vec4(0.0, 0.0, 0.0, 1.0); return; }
+  vec2 css = vec2(gl_FragCoord.x, uCanvasH - gl_FragCoord.y) / uDpr;
+  vec2 p = vec2(css.x - uCenter.x, -(css.y - uCenter.y)) / uPxPerMm;   // mm（ドーム中心が原点、y 上）
+  float r = length(p);
+  if (r < uA) { o = vec4(0.0, 0.0, 0.0, 1.0); return; }               // ドームの真下
+  float w = fwidth(p.x);
+  // 方眼紙：1mm・5mm・10mm の線
+  vec3 paper = vec3(0.94, 0.94, 0.90);
+  vec3 ink = vec3(0.35, 0.62, 0.60);
+  float g1 = max(gridLine(p.x, 1.0, w), gridLine(p.y, 1.0, w)) * 0.22;
+  float g5 = max(gridLine(p.x, 5.0, w * 1.4), gridLine(p.y, 5.0, w * 1.4)) * 0.45;
+  float g10 = max(gridLine(p.x, 10.0, w * 2.0), gridLine(p.y, 10.0, w * 2.0)) * 0.7;
+  vec3 col = mix(paper, ink, max(max(g1, g5), g10));
+  // 影：床の点から光の方へ伸ばした線が球（の床より上の部分）に当たるか。
+  // 当たり具合を、線と球の中心との最短距離で測り、遠いほどぼかす（面光源のような半影）
+  vec3 L = normalize(uLight);
+  vec3 o3 = vec3(p, uZb);
+  vec3 C = vec3(0.0, 0.0, uCz);
+  float t = dot(C - o3, L);
+  float sh = 0.0;
+  if (t > 0.0) {
+    vec3 q = o3 + L * t;
+    float d = length(q - C);
+    float soft = 0.15 + 0.06 * t;
+    sh = 1.0 - smoothstep(uR - soft, uR + soft, d);
+    sh *= smoothstep(uZb - 0.5, uZb + 0.5, q.z + uR * 0.0);
+  }
+  // 接地の影（根元ほど暗い）
+  float ao = exp(-(r - uA) / 1.2) * 0.55 + exp(-(r - uA) / 6.0) * 0.18;
+  col *= (1.0 - 0.55 * sh) * (1.0 - ao);
   o = vec4(col, 1.0);
 }`;
 
@@ -273,9 +330,14 @@ export interface FrameUniforms {
   time: number;                                // 秒
   beam: { dir: Vec3; len: number } | null;     // 光の指針（ドーム座標の単位ベクトル、石から表面までの長さ mm）
   eyeball: { gaze: Vec3; pupil: number; irisType: number; lidOpen: number; lids: boolean } | null;
+  light: Vec3;            // 光の来る向き（ドーム座標）
+  floor: boolean;         // 床と影
+  shade: boolean;         // ドームの模様の陰影
 }
 
 export class Renderer {
+  private floorProg: WebGLProgram;
+  private fu: Record<string, WebGLUniformLocation | null> = {};
   private gl: WebGL2RenderingContext;
   private prog: WebGLProgram;
   private vao: WebGLVertexArrayObject;
@@ -298,11 +360,18 @@ export class Renderer {
     gl.linkProgram(prog);
     if (!gl.getProgramParameter(prog, gl.LINK_STATUS)) throw new Error(gl.getProgramInfoLog(prog) ?? "link");
     this.prog = prog;
+    const fp = gl.createProgram()!;
+    gl.attachShader(fp, sh(gl.VERTEX_SHADER, FLOOR_VS));
+    gl.attachShader(fp, sh(gl.FRAGMENT_SHADER, FLOOR_FS));
+    gl.linkProgram(fp);
+    if (!gl.getProgramParameter(fp, gl.LINK_STATUS)) throw new Error(gl.getProgramInfoLog(fp) ?? "link");
+    this.floorProg = fp;
+    for (const n of ["uCenter", "uPxPerMm", "uDpr", "uCanvasH", "uA", "uR", "uCz", "uZb", "uLight", "uFloor"]) this.fu[n] = gl.getUniformLocation(fp, n);
     gl.useProgram(prog);
     for (const n of ["uCenter", "uPxPerMm", "uSize", "uLat", "uLon", "uPattern", "uTex", "uHasTex",
       "uR", "uCz", "uZb", "uA", "uAmax", "uN", "uN2", "uGap", "uGlass", "uEye", "uCorr", "uNA", "uNP",
       "uBubble", "uBubbleDir", "uBubbleRad", "uRingScale", "uTime", "uBeamDir", "uBeamLen",
-      "uGaze", "uPupil", "uIrisType", "uLidOpen", "uLids"]) this.u[n] = gl.getUniformLocation(prog, n);
+      "uGaze", "uPupil", "uIrisType", "uLidOpen", "uLids", "uShade", "uLight"]) this.u[n] = gl.getUniformLocation(prog, n);
     this.vao = gl.createVertexArray()!; // 頂点属性なし（gl_VertexID だけで描く）
 
     this.tex = gl.createTexture()!;
@@ -329,11 +398,26 @@ export class Renderer {
     const gl = this.gl, u = this.u;
     gl.viewport(0, 0, this.canvas.width, this.canvas.height);
     gl.clearColor(0, 0, 0, 1); gl.clear(gl.COLOR_BUFFER_BIT);
+    const g = geometry(f.optics);
+    // 床と影
+    const fu = this.fu;
+    gl.useProgram(this.floorProg);
+    gl.uniform2f(fu.uCenter, f.centerPx[0], f.centerPx[1]);
+    gl.uniform1f(fu.uPxPerMm, f.pxPerMm);
+    gl.uniform1f(fu.uDpr, this.canvas.width / f.sizePx[0]);
+    gl.uniform1f(fu.uCanvasH, this.canvas.height);
+    gl.uniform1f(fu.uA, g.a); gl.uniform1f(fu.uR, g.R); gl.uniform1f(fu.uCz, g.cz); gl.uniform1f(fu.uZb, g.zb);
+    gl.uniform3f(fu.uLight, f.light.x, f.light.y, f.light.z);
+    gl.uniform1i(fu.uFloor, f.floor ? 1 : 0);
+    gl.bindVertexArray(this.vao);
+    gl.drawArrays(gl.TRIANGLES, 0, 3);
+    // ドーム
     gl.useProgram(this.prog);
+    gl.uniform1i(u.uShade, f.shade ? 1 : 0);
+    gl.uniform3f(u.uLight, f.light.x, f.light.y, f.light.z);
     gl.uniform2f(u.uCenter, f.centerPx[0], f.centerPx[1]);
     gl.uniform1f(u.uPxPerMm, f.pxPerMm);
     gl.uniform2f(u.uSize, f.sizePx[0], f.sizePx[1]);
-    const g = geometry(f.optics);
     gl.uniform1f(u.uR, g.R); gl.uniform1f(u.uCz, g.cz); gl.uniform1f(u.uZb, g.zb);
     gl.uniform1f(u.uA, g.a); gl.uniform1f(u.uAmax, g.amax);
     gl.uniform1f(u.uN, f.optics.n); gl.uniform1f(u.uN2, f.optics.n2);
