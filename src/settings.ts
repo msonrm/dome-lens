@@ -27,7 +27,7 @@ export const DEFAULTS: Settings = {
   D: 300, tilt: 0, az: 90,
   lat: 35, spd: 12, pattern: 0, corr: true, spin: true,
   cal: null,
-  track: false, eyeMode: "mid",
+  track: false, eyeMode: "head",
   camX: 0, camY: 50, fxRatio: 0.57, flipX: false, calibD: 300, gain: 1, headDepth: 90,
   showCam: false, showDot: true,
 };
