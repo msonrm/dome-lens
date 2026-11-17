@@ -1,10 +1,12 @@
 import "./style.css";
 import { eyeFromAngles, geometry, type Vec3 } from "./optics";
-import { Renderer } from "./renderer";
+import { Renderer, type FrameUniforms } from "./renderer";
+type FrameUniformsEyeball = FrameUniforms["eyeball"];
 import { EyeDetector } from "./detector";
 import { IRIS_MM, type FaceObs } from "./face";
 import { OneEuro } from "./filter";
 import { TiltSensor, Bubble } from "./level";
+import { EyeballMotion } from "./eyeball";
 import { DEFAULTS, load, save, type Settings, type EyeMode } from "./settings";
 
 const $ = <T extends HTMLElement = HTMLElement>(id: string) => document.getElementById(id) as T;
@@ -70,6 +72,8 @@ const video = $<HTMLVideoElement>("cam");
 const detector = new EyeDetector(video);
 const filt = [new OneEuro(0.6, 0.02), new OneEuro(0.6, 0.02), new OneEuro(0.3, 0.01)];
 let targetEye: Vec3 | null = null;   // 検出ごとに更新される目の位置（フィルタ後）
+let targetMid: Vec3 | null = null;   // 見る人の両目の中点（眼球モードの視線の的）
+const filtMid = [new OneEuro(0.8, 0.03), new OneEuro(0.8, 0.03), new OneEuro(0.4, 0.01)];
 let shownEye: Vec3 | null = null;    // 描画に使う目の位置（毎フレーム targetEye へ滑らかに近づける）
 let lastObs: FaceObs | null = null;
 let trackStatus = "";
@@ -99,14 +103,16 @@ detector.onObs = (o, t) => {
   if (!o) { trackStatus = "顔が見つかりません"; return; }
   trackStatus = "追跡中";
   lastObs = o;
-  const e = eyesFromObs(o)[S.eyeMode];
+  const all = eyesFromObs(o);
+  const e = all[S.eyeMode];
   const ts = t / 1000;
   targetEye = { x: filt[0].filter(e.x, ts), y: filt[1].filter(e.y, ts), z: filt[2].filter(e.z, ts) };
+  targetMid = { x: filtMid[0].filter(all.mid.x, ts), y: filtMid[1].filter(all.mid.y, ts), z: filtMid[2].filter(all.mid.z, ts) };
 };
 
 async function startTracking() {
   try {
-    filt.forEach(f => f.reset()); targetEye = null; shownEye = null;
+    filt.forEach(f => f.reset()); filtMid.forEach(f => f.reset()); targetEye = null; targetMid = null; shownEye = null;
     await detector.start();
     S.track = true;
   } catch (e) {
@@ -124,11 +130,11 @@ function stopTracking() {
 const units: Record<string, string> = {
   d: "mm", h: "mm", n: "", gap: "mm", glass: "mm", D: "mm", tilt: "°", az: "°", lat: "°", spd: "°/s",
   camX: "mm", camY: "mm", calibD: "mm", gain: "×", headDepth: "mm", levelGain: "×",
-  beamBearing: "°", beamElev: "°", northOffset: "°",
+  beamBearing: "°", beamElev: "°", northOffset: "°", pupil: "",
 };
-type NumKey = "d" | "h" | "n" | "gap" | "glass" | "D" | "tilt" | "az" | "lat" | "spd" | "camX" | "camY" | "calibD" | "gain" | "headDepth" | "levelGain" | "beamBearing" | "beamElev" | "northOffset";
+type NumKey = "d" | "h" | "n" | "gap" | "glass" | "D" | "tilt" | "az" | "lat" | "spd" | "camX" | "camY" | "calibD" | "gain" | "headDepth" | "levelGain" | "beamBearing" | "beamElev" | "northOffset" | "pupil";
 
-function fmt(k: string, v: number) { return (k === "n" || k === "gain" ? v.toFixed(2) : String(v)) + units[k]; }
+function fmt(k: string, v: number) { return (k === "n" || k === "gain" || k === "pupil" ? v.toFixed(2) : String(v)) + units[k]; }
 
 // ---------- 水準器 ----------
 const tiltSensor = new TiltSensor();
@@ -184,6 +190,8 @@ function syncInputs() {
   toggle("bCamView", S.showCam, "カメラ映像 ON", "カメラ映像 OFF");
   toggle("bTilt", tiltOn, "傾きセンサー 動作中", "傾きセンサーを有効にする");
   toggle("bBubbleAll", S.bubbleAll, "他の模様にも気泡 ON", "他の模様にも気泡 OFF");
+  toggle("bLids", S.lids, "まぶた ON", "まぶた OFF");
+  $<HTMLSelectElement>("irisType").value = String(S.irisType);
   video.style.display = S.track && S.showCam ? "block" : "none";
 }
 for (const k of Object.keys(units) as NumKey[]) {
@@ -252,6 +260,8 @@ $("bZero2").onclick = () => {
   hint.textContent = `ゼロ点を合わせました（ずれ ${(Math.hypot(S.levelBias.x, S.levelBias.y) * 180 / Math.PI).toFixed(2)}°）。`;
 };
 $("bZeroReset").onclick = () => { S.levelBias = { x: 0, y: 0 }; zero1 = null; save(S); hint.textContent = "ゼロ点を初期状態に戻しました。"; };
+$<HTMLSelectElement>("irisType").addEventListener("change", e => { S.irisType = parseInt((e.target as HTMLSelectElement).value, 10); save(S); });
+$("bLids").onclick = () => { S.lids = !S.lids; syncInputs(); save(S); };
 $("bNorthHere").onclick = () => {
   if (!tiltSensor.active) { hint.textContent = "先に「水準器」欄で傾きセンサーを有効にしてください。"; return; }
   // 今の端末上端の水平な向きが「北」になるよう補正する
@@ -290,6 +300,7 @@ void keepAwake();
 
 // ---------- 描画ループ ----------
 const dot = $("dot"), hud = $("hud");
+const eyeball = new EyeballMotion();
 let lon = 139.7 * Math.PI / 180, prev = performance.now(), hudAt = 0;
 let frames = 0, fps = 0, fpsAt = performance.now();
 
@@ -330,8 +341,18 @@ function frame(now: number) {
     bubbleU = { dir: { x: Math.sin(p) * Math.cos(a), y: Math.sin(p) * Math.sin(a), z: Math.cos(p) }, rad };
   }
 
+  // 眼球：眼球（ドームの球）の中心から見た、見る人の目の方向を向く
+  let eyeballU: FrameUniformsEyeball = null;
+  if (S.pattern === 6) {
+    const g = geometry(S);
+    const V = S.track && targetMid ? targetMid : E;
+    eyeball.update({ x: V.x, y: V.y, z: V.z - g.cz }, dt, 45 * Math.PI / 180);
+    eyeballU = { gaze: eyeball.gaze, pupil: S.pupil, irisType: S.irisType, lidOpen: eyeball.lidOpen, lids: S.lids };
+  }
+
   const ppm = pxPerMm();
   renderer.draw({
+    eyeball: eyeballU,
     bubble: bubbleU, ringScale: S.levelGain,
     time: now / 1000, beam: S.pattern === 5 ? beamNow() : null,
     optics: S, eye: E, corrected: S.corr,

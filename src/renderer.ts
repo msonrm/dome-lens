@@ -82,6 +82,7 @@ in vec3 vS; in vec3 vT;
 uniform float uLat, uLon; uniform int uPattern; uniform sampler2D uTex; uniform bool uHasTex;
 uniform float uZb, uR, uCz, uTime;
 uniform vec3 uBeamDir; uniform float uBeamLen;
+uniform vec3 uGaze; uniform float uPupil; uniform int uIrisType; uniform float uLidOpen; uniform bool uLids;
 uniform bool uBubble; uniform vec3 uBubbleDir; uniform float uBubbleRad; uniform float uRingScale;
 out vec4 o;
 const float PI = 3.14159265;
@@ -129,6 +130,59 @@ vec3 beamScene(vec3 u){
   }
   return col;
 }
+// 眼球：ドーム表面を眼球の前面とみなし、視線 uGaze の方向に虹彩と瞳孔を描く。
+// 模様は眼球に固定した座標（視線方向を軸にした座標）で作るので、白目の血管も眼球と一緒に回る
+vec3 eyeScene(vec3 u){
+  vec3 gz = normalize(uGaze);
+  vec3 t1 = normalize(cross(vec3(0.0, 1.0, 0.0), gz));
+  vec3 t2 = cross(gz, t1);
+  vec3 le = vec3(dot(u, t1), dot(u, t2), dot(u, gz));     // 眼球の座標
+  float th = acos(clamp(le.z, -1.0, 1.0));               // 視線からの角度
+  float ph = atan(le.y, le.x);
+  float irisR = radians(26.0);
+  float r = th / irisR;
+  // 白目：わずかに黄みがかった白、周辺ほど赤み、血管
+  vec3 col = mix(vec3(0.95, 0.93, 0.89), vec3(0.88, 0.74, 0.70), smoothstep(0.9, 2.6, r));
+  float vein = 1.0 - abs(fbm(le * 5.0 + 11.0) * 2.0 - 1.0);
+  vein = pow(clamp(vein, 0.0, 1.0), 20.0) * smoothstep(1.6, 3.0, r);
+  col = mix(col, vec3(0.70, 0.12, 0.12), vein * 0.35);
+  // 虹彩
+  vec3 base, dark;
+  if (uIrisType == 1)      { base = vec3(0.35, 0.55, 0.78); dark = vec3(0.08, 0.16, 0.30); }
+  else if (uIrisType == 2) { base = vec3(0.38, 0.55, 0.28); dark = vec3(0.12, 0.20, 0.08); }
+  else if (uIrisType == 3) { base = vec3(0.80, 0.70, 0.18); dark = vec3(0.35, 0.28, 0.04); }
+  else                     { base = vec3(0.42, 0.25, 0.12); dark = vec3(0.12, 0.06, 0.03); }
+  vec2 cs = vec2(cos(ph), sin(ph));
+  float fib = fbm(vec3(cs * 9.0, r * 2.5)) ;                          // 放射状の線維
+  float fib2 = noise(vec3(cs * 40.0, r * 6.0));
+  vec3 iris = mix(dark, base, smoothstep(0.25, 0.75, fib) * 0.8 + 0.2 * fib2);
+  iris = mix(iris, base * 1.25, smoothstep(0.30, 0.40, r) * (1.0 - smoothstep(0.40, 0.55, r)) * 0.5); // 瞳孔のまわりの輪
+  iris = mix(iris, dark * 0.5, smoothstep(0.80, 1.0, r));                                         // 外周の暗い輪
+  float fw = fwidth(r);
+  col = mix(col, iris, 1.0 - smoothstep(1.0 - fw, 1.0 + fw * 2.0, r));
+  // 瞳孔（猫は縦長）
+  vec2 lp = le.xy / irisR;
+  float pd = uIrisType == 3 ? length(lp / vec2(max(uPupil * 0.28, 0.02), uPupil * 1.6)) : length(lp) / uPupil;
+  float pfw = fwidth(pd);
+  col = mix(col, vec3(0.01), 1.0 - smoothstep(1.0 - pfw, 1.0 + pfw, pd));
+  // ドームの縁ほど暗く（眼窩の影）
+  col *= mix(0.45, 1.0, smoothstep(0.0, 0.75, u.z));
+  // まぶた（ドームに固定。上まぶたは視線の上下に少しついていく）
+  if (uLids) {
+    float open = uLidOpen;
+    float up = mix(-0.25, 0.80 + gz.y * 0.25, open) - 0.18 * u.x * u.x;
+    float lo = mix(-0.25, -0.78 + gz.y * 0.12, open) + 0.12 * u.x * u.x;
+    float fl = fwidth(u.y) * 1.5;
+    float skin = max(smoothstep(up - fl, up + fl, u.y), 1.0 - smoothstep(lo - fl, lo + fl, u.y));
+    vec3 skinCol = vec3(0.78, 0.56, 0.46) * mix(0.55, 1.0, smoothstep(0.0, 0.8, u.z));
+    float lash = (1.0 - smoothstep(0.0, 0.035, abs(u.y - up))) * step(0.02, u.z);
+    col = mix(col, vec3(0.05, 0.03, 0.03), lash * 0.8);
+    col = mix(col, skinCol, skin);
+    // まぶたの影
+    col *= mix(1.0, 0.6, (1.0 - smoothstep(0.0, 0.12, up - u.y)) * (1.0 - skin));
+  }
+  return col;
+}
 void main(){
   vec3 u = normalize(vDir);
   float la = uLat, lo = uLon;
@@ -172,6 +226,8 @@ void main(){
     col = mix(col, vec3(1.0), cloud * 0.6);
   } else if (uPattern == 5) {
     col = beamScene(u);
+  } else if (uPattern == 6) {
+    col = eyeScene(u);
   } else if (uPattern == 3) {
     if (uHasTex) col = texture(uTex, vec2(lon / (2.0 * PI) + 0.5, 0.5 - lat / PI)).rgb;
     else col = vec3(0.3);
@@ -216,6 +272,7 @@ export interface FrameUniforms {
   ringScale: number;                           // 水準器の目盛り：傾き1°がドーム上で何度か
   time: number;                                // 秒
   beam: { dir: Vec3; len: number } | null;     // 光の指針（ドーム座標の単位ベクトル、石から表面までの長さ mm）
+  eyeball: { gaze: Vec3; pupil: number; irisType: number; lidOpen: number; lids: boolean } | null;
 }
 
 export class Renderer {
@@ -244,7 +301,8 @@ export class Renderer {
     gl.useProgram(prog);
     for (const n of ["uCenter", "uPxPerMm", "uSize", "uLat", "uLon", "uPattern", "uTex", "uHasTex",
       "uR", "uCz", "uZb", "uA", "uAmax", "uN", "uN2", "uGap", "uGlass", "uEye", "uCorr", "uNA", "uNP",
-      "uBubble", "uBubbleDir", "uBubbleRad", "uRingScale", "uTime", "uBeamDir", "uBeamLen"]) this.u[n] = gl.getUniformLocation(prog, n);
+      "uBubble", "uBubbleDir", "uBubbleRad", "uRingScale", "uTime", "uBeamDir", "uBeamLen",
+      "uGaze", "uPupil", "uIrisType", "uLidOpen", "uLids"]) this.u[n] = gl.getUniformLocation(prog, n);
     this.vao = gl.createVertexArray()!; // 頂点属性なし（gl_VertexID だけで描く）
 
     this.tex = gl.createTexture()!;
@@ -292,6 +350,12 @@ export class Renderer {
     gl.uniform1f(u.uTime, f.time);
     gl.uniform3f(u.uBeamDir, f.beam?.dir.x ?? 0, f.beam?.dir.y ?? 0, f.beam?.dir.z ?? 1);
     gl.uniform1f(u.uBeamLen, f.beam?.len ?? 0);
+    if (f.eyeball) {
+      const e = f.eyeball;
+      gl.uniform3f(u.uGaze, e.gaze.x, e.gaze.y, e.gaze.z);
+      gl.uniform1f(u.uPupil, e.pupil); gl.uniform1i(u.uIrisType, e.irisType);
+      gl.uniform1f(u.uLidOpen, e.lidOpen); gl.uniform1i(u.uLids, e.lids ? 1 : 0);
+    }
     gl.uniform1i(u.uHasTex, this.hasTex ? 1 : 0);
     gl.uniform1i(u.uTex, 0);
     gl.activeTexture(gl.TEXTURE0); gl.bindTexture(gl.TEXTURE_2D, this.tex);

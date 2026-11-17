@@ -28,6 +28,10 @@ export interface Settings extends OpticsParams {
   beamBearing: number;          // 指す方位（北から時計回り、度）
   beamElev: number;             // 仰角（度）
   northOffset: number;          // 方位の補正（度）。磁北と真北のずれや、方位センサーがない端末用
+  // 眼球
+  irisType: number;             // 0 茶、1 青、2 緑、3 猫
+  pupil: number;                // 瞳孔の大きさ（虹彩に対する比）
+  lids: boolean;                // まぶたとまばたき
 }
 
 export const DEFAULTS: Settings = {
@@ -40,6 +44,7 @@ export const DEFAULTS: Settings = {
   showCam: false, showDot: true,
   levelGain: 15, levelBias: { x: 0, y: 0 }, bubbleAll: false,
   beamBearing: 0, beamElev: 20, northOffset: 0,
+  irisType: 0, pupil: 0.38, lids: true,
 };
 
 const KEY = "domeLens.v1";
