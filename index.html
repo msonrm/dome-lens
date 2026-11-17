@@ -41,11 +41,14 @@
         <option value="mid">両目の中点</option>
         <option value="left">左目</option>
         <option value="right">右目</option>
+        <option value="head">頭の中心</option>
       </select>
       <button id="bFlip">左右反転</button>
     </div>
     <div class="hud" id="hud">—</div>
     <label class="s">感度<input id="gain" type="range" min="0" max="1.5" step="0.05"><output></output></label>
+    <label class="s">頭の奥行き<input id="headDepth" type="range" min="0" max="150" step="5"><output></output></label>
+    <div class="hint">頭の奥行き＝「頭の中心」モードで、両目の間から首の回転軸までの距離。0 にすると両目の中点と同じになります。</div>
     <label class="s">カメラ位置 横<input id="camX" type="range" min="-40" max="40" step="0.5"><output></output></label>
     <label class="s">カメラ位置 縦<input id="camY" type="range" min="0" max="150" step="0.5"><output></output></label>
     <div class="row"><button id="bCamEst">全画面からカメラ位置を推定</button></div>

@@ -73,20 +73,24 @@ let shownEye: Vec3 | null = null;    // 描画に使う目の位置（毎フレ�
 let lastObs: FaceObs | null = null;
 let trackStatus = "";
 
-/** カメラの観測 → ドーム座標系での目の位置（mm） */
-function eyesFromObs(o: FaceObs): { mid: Vec3; left: Vec3; right: Vec3 } {
+/** カメラの観測 → ドーム座標系での視点の位置（mm） */
+function eyesFromObs(o: FaceObs): Record<EyeMode, Vec3> {
   const fx = S.fxRatio * Math.max(o.w, o.h);
   const Z = fx * IRIS_MM / o.irisPx;                 // カメラからの奥行き
   const sx = S.flipX ? 1 : -1;                       // フロントカメラ映像の右 = 画面の左（既定）
-  const conv = (u: number, v: number): Vec3 => ({
-    x: S.camX + sx * (u - o.w / 2) * Z / fx,
-    y: S.camY - (v - o.h / 2) * Z / fx,
-    z: S.glass + Z,
-  });
-  const a = conv(o.eyes[0].u, o.eyes[0].v), b = conv(o.eyes[1].u, o.eyes[1].v);
+  // カメラ座標（X 画像の右、Y 画像の下、Z 奥）→ ドーム座標
+  const toDome = (X: number, Y: number, Zc: number): Vec3 => ({ x: S.camX + sx * X, y: S.camY - Y, z: S.glass + Zc });
+  const cam = (u: number, v: number) => [(u - o.w / 2) * Z / fx, (v - o.h / 2) * Z / fx, Z];
+  const A = cam(o.eyes[0].u, o.eyes[0].v), B = cam(o.eyes[1].u, o.eyes[1].v);
+  const a = toDome(A[0], A[1], A[2]), b = toDome(B[0], B[1], B[2]);
   const [left, right] = a.x < b.x ? [a, b] : [b, a]; // 画面に向かって左にある方が左目
-  const mid = { x: (a.x + b.x) / 2, y: (a.y + b.y) / 2, z: (a.z + b.z) / 2 };
-  return { mid, left, right };
+  const M = [(A[0] + B[0]) / 2, (A[1] + B[1]) / 2, (A[2] + B[2]) / 2];
+  const mid = toDome(M[0], M[1], M[2]);
+  // 頭の中心：両目の中点から顔の正面と逆向きに headDepth 下がった点。
+  // 顔を左右に振っても（首を軸に回しても）ほとんど動かない
+  const n = o.normal, k = S.headDepth;
+  const head = toDome(M[0] - n[0] * k, M[1] - n[1] * k, M[2] - n[2] * k);
+  return { mid, left, right, head };
 }
 
 detector.onStatus = st => { trackStatus = st; };
@@ -118,9 +122,9 @@ function stopTracking() {
 // ---------- UI ----------
 const units: Record<string, string> = {
   d: "mm", h: "mm", n: "", gap: "mm", glass: "mm", D: "mm", tilt: "°", az: "°", lat: "°", spd: "°/s",
-  camX: "mm", camY: "mm", calibD: "mm", gain: "×",
+  camX: "mm", camY: "mm", calibD: "mm", gain: "×", headDepth: "mm",
 };
-type NumKey = "d" | "h" | "n" | "gap" | "glass" | "D" | "tilt" | "az" | "lat" | "spd" | "camX" | "camY" | "calibD" | "gain";
+type NumKey = "d" | "h" | "n" | "gap" | "glass" | "D" | "tilt" | "az" | "lat" | "spd" | "camX" | "camY" | "calibD" | "gain" | "headDepth";
 
 function fmt(k: string, v: number) { return (k === "n" || k === "gain" ? v.toFixed(2) : String(v)) + units[k]; }
 function toggle(id: string, on: boolean, onText: string, offText: string) {

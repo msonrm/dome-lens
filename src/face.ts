@@ -12,6 +12,8 @@ export interface EyeObs { u: number; v: number; }       // 画像上の目の位
 export interface FaceObs {
   eyes: [EyeObs, EyeObs];
   irisPx: number;    // 虹彩の直径（ピクセル、両目の平均）
+  /** 顔の正面方向（カメラ向き）の単位ベクトル。x: 画像の右、y: 画像の下、z: カメラから遠ざかる向き */
+  normal: [number, number, number];
   w: number; h: number;
 }
 
@@ -38,9 +40,24 @@ export function obsFromLandmarks(L: NormalizedLandmark[] | undefined, w: number,
   const P = (i: number) => ({ x: L[i].x * w, y: L[i].y * h });
   const dist = (i: number, j: number) => { const a = P(i), b = P(j); return Math.hypot(a.x - b.x, a.y - b.y); };
   const mid = (i: number, j: number) => { const a = P(i), b = P(j); return { u: (a.x + b.x) / 2, v: (a.y + b.y) / 2 }; };
-  // 虹彩：468 と 473 が中心、469〜472 / 474〜477 がその周囲
-  const dA = (dist(469, 471) + dist(470, 472)) / 2;
-  const dB = (dist(474, 476) + dist(475, 477)) / 2;
+  // 虹彩：468 と 473 が中心、469〜472 / 474〜477 がその周囲。
+  // 顔を横に向けると横の直径が、うなずくと縦の直径が見かけ上縮むので、大きい方を使う
+  const dA = Math.max(dist(469, 471), dist(470, 472));
+  const dB = Math.max(dist(474, 476), dist(475, 477));
   // 目頭・目尻：33/133 と 362/263
-  return { eyes: [mid(33, 133), mid(362, 263)], irisPx: (dA + dB) / 2, w, h };
+  const eA = mid(33, 133), eB = mid(362, 263);
+
+  // 顔の向き：両目を結ぶ線と、額→あごの線から面の法線を出す（z は x と同じ尺度）
+  const P3 = (i: number) => [L[i].x * w, L[i].y * h, L[i].z * w];
+  const eyeL3 = [(P3(33)[0] + P3(133)[0]) / 2, (P3(33)[1] + P3(133)[1]) / 2, (P3(33)[2] + P3(133)[2]) / 2];
+  const eyeR3 = [(P3(362)[0] + P3(263)[0]) / 2, (P3(362)[1] + P3(263)[1]) / 2, (P3(362)[2] + P3(263)[2]) / 2];
+  let a = [eyeR3[0] - eyeL3[0], eyeR3[1] - eyeL3[1], eyeR3[2] - eyeL3[2]];
+  if (a[0] < 0) a = a.map(v => -v);               // 画像の左→右の向きにそろえる
+  const f = P3(10), c = P3(152);                  // 額、あご
+  const b = [c[0] - f[0], c[1] - f[1], c[2] - f[2]];
+  let n = [a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0]];
+  const nl = Math.hypot(n[0], n[1], n[2]) || 1;
+  n = n.map(v => -v / nl);                          // a×b はカメラから遠ざかる向きなので反転
+  if (n[2] > 0) n = n.map(v => -v);
+  return { eyes: [eA, eB], irisPx: (dA + dB) / 2, normal: [n[0], n[1], n[2]], w, h };
 }
