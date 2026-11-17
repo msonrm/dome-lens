@@ -11,6 +11,8 @@ uniform float uR, uCz, uZb, uA, uAmax, uN, uN2, uGap, uGlass;
 uniform vec3 uEye; uniform bool uCorr;
 uniform int uNA, uNP;
 out vec3 vDir;
+out vec3 vS;   // ドーム表面上の点（mm）
+out vec3 vT;   // ドーム内部を進む光線の向き（目からの光線を屈折させたもの）
 const float PI = 3.14159265358979;
 const float NG = ${N_GLASS.toFixed(3)};
 vec3 dirAt(ivec2 g){
@@ -18,9 +20,10 @@ vec3 dirAt(ivec2 g){
   float ph = 2.0 * PI * float(g.y) / float(uNP);
   return vec3(sin(al) * cos(ph), sin(al) * sin(ph), cos(al));
 }
-bool land(vec3 u, out vec2 P, out vec3 S){
+bool land(vec3 u, out vec2 P, out vec3 S, out vec3 Tout){
   S = vec3(uR * u.xy, uCz + uR * u.z);
   P = S.xy;
+  Tout = vec3(0.0, 0.0, -1.0);
   if (!uCorr) return true;
   vec3 I = normalize(S - uEye);
   float cosi = -dot(I, u);
@@ -30,6 +33,7 @@ bool land(vec3 u, out vec2 P, out vec3 S){
   if (k1 < 0.0) return false;
   vec3 T = eta * I + (eta * cosi - sqrt(k1)) * u;
   if (T.z >= -1e-6) return false;
+  Tout = T;
   vec2 B = S.xy + (uZb - S.z) / T.z * T.xy;
   if (dot(B, B) > uA * uA * 1.000001) return false;
   float sh = length(T.xy);
@@ -50,8 +54,8 @@ void main(){
   if (hf == 0) { g0 = ivec2(i, j);     g1 = ivec2(i + 1, j); g2 = ivec2(i, j + 1); }
   else         { g0 = ivec2(i, j + 1); g1 = ivec2(i + 1, j); g2 = ivec2(i + 1, j + 1); }
   vec3 u0 = dirAt(g0), u1 = dirAt(g1), u2 = dirAt(g2);
-  vec2 P0, P1, P2; vec3 S0, S1, S2;
-  bool ok0 = land(u0, P0, S0), ok1 = land(u1, P1, S1), ok2 = land(u2, P2, S2);
+  vec2 P0, P1, P2; vec3 S0, S1, S2, T0, T1, T2;
+  bool ok0 = land(u0, P0, S0, T0), ok1 = land(u1, P1, S1, T1), ok2 = land(u2, P2, S2, T2);
   bool ok = ok0 && ok1 && ok2;
   if (ok) {
     float ar = (P1.x - P0.x) * (P2.y - P0.y) - (P2.x - P0.x) * (P1.y - P0.y);
@@ -62,9 +66,11 @@ void main(){
       if (pe > 64.0 * se + 0.04) ok = false;
     }
   }
-  if (!ok) { gl_Position = vec4(2.0, 2.0, 2.0, 1.0); vDir = vec3(0.0, 0.0, 1.0); return; }
+  if (!ok) { gl_Position = vec4(2.0, 2.0, 2.0, 1.0); vDir = vec3(0.0, 0.0, 1.0); vS = vec3(0.0); vT = vec3(0.0, 0.0, -1.0); return; }
   vec2 P = c == 0 ? P0 : (c == 1 ? P1 : P2);
   vDir = c == 0 ? u0 : (c == 1 ? u1 : u2);
+  vS = c == 0 ? S0 : (c == 1 ? S1 : S2);
+  vT = c == 0 ? T0 : (c == 1 ? T1 : T2);
   vec2 px = uCenter + vec2(P.x, -P.y) * uPxPerMm;
   gl_Position = vec4(px.x / uSize.x * 2.0 - 1.0, 1.0 - px.y / uSize.y * 2.0, 0.0, 1.0);
 }`;
@@ -72,7 +78,10 @@ void main(){
 const FS = `#version 300 es
 precision highp float;
 in vec3 vDir;
+in vec3 vS; in vec3 vT;
 uniform float uLat, uLon; uniform int uPattern; uniform sampler2D uTex; uniform bool uHasTex;
+uniform float uZb, uR, uCz, uTime;
+uniform vec3 uBeamDir; uniform float uBeamLen;
 uniform bool uBubble; uniform vec3 uBubbleDir; uniform float uBubbleRad; uniform float uRingScale;
 out vec4 o;
 const float PI = 3.14159265;
@@ -84,6 +93,42 @@ float noise(vec3 x){
 }
 float fbm(vec3 p){ float s = 0.0, a = 0.5; for (int i = 0; i < 6; i++){ s += a * noise(p); p *= 2.03; a *= 0.5; } return s; }
 float lineMask(float dist, float w){ return 1.0 - smoothstep(w * 0.6, w * 1.6, dist); }
+// 2本の線分 p0+s·d0 (0≤s≤l0) と p1+t·d1 (0≤t≤l1) の最短距離²と、そのときの t（d0, d1 は単位ベクトル）
+vec2 segDist(vec3 p0, vec3 d0, float l0, vec3 p1, vec3 d1, float l1){
+  vec3 r = p0 - p1;
+  float b = dot(d0, d1), c = dot(d0, r), f = dot(d1, r);
+  float den = 1.0 - b * b;
+  float s = den > 1e-6 ? clamp((b * f - c) / den, 0.0, l0) : 0.0;
+  float t = clamp(b * s + f, 0.0, l1);
+  s = clamp(b * t - c, 0.0, l0);
+  vec3 q = p0 + d0 * s - (p1 + d1 * t);
+  return vec2(dot(q, q), t);
+}
+// 光の指針：ドーム底面の中心の石から光線が伸び、ドーム表面に当たって光る
+vec3 beamScene(vec3 u){
+  vec3 col = mix(vec3(0.015, 0.03, 0.06), vec3(0.0, 0.005, 0.015), smoothstep(0.0, 1.4, acos(clamp(u.z, -1.0, 1.0))));
+  vec3 glow = vec3(0.55, 0.9, 1.0);
+  vec3 T = normalize(vT);
+  float sB = (uZb - vS.z) / min(T.z, -1e-4);       // 視線がドーム内を進む長さ（底面まで）
+  float pulse = 0.85 + 0.15 * sin(uTime * 2.4);
+  vec3 O = vec3(0.0, 0.0, uZb + 0.8);               // 石の中心（底面から少し上）
+  // 石：視線と石の中心との距離
+  vec2 ds = segDist(vS, T, sB, O, vec3(0.0, 0.0, 1.0), 0.0);
+  float stone = exp(-ds.x / (2.0 * 0.45 * 0.45)) + 0.35 * exp(-ds.x / (2.0 * 1.6 * 1.6));
+  col += glow * stone * 1.6 * pulse;
+  if (uBeamLen > 0.0) {
+    vec2 db = segDist(vS, T, sB, O, uBeamDir, uBeamLen);
+    float along = db.y / uBeamLen;
+    float core = exp(-db.x / (2.0 * 0.12 * 0.12));
+    float halo = exp(-db.x / (2.0 * 0.6 * 0.6));
+    col += glow * (core * 1.4 + halo * 0.35) * mix(1.0, 0.75, along) * pulse;
+    // 表面の光点
+    vec3 Q = O + uBeamDir * uBeamLen;
+    float dq = length(vS - Q);
+    col += glow * (exp(-dq * dq / (2.0 * 0.35 * 0.35)) * 1.8 + exp(-dq * dq / (2.0 * 1.4 * 1.4)) * 0.45) * pulse;
+  }
+  return col;
+}
 void main(){
   vec3 u = normalize(vDir);
   float la = uLat, lo = uLon;
@@ -125,6 +170,8 @@ void main(){
     col = mix(col, vec3(0.95), smoothstep(0.80, 0.86, abs(g.z)));
     float cloud = smoothstep(0.55, 0.75, fbm(g * 4.0 + vec3(uLon * 0.3, 0.0, 7.0)));
     col = mix(col, vec3(1.0), cloud * 0.6);
+  } else if (uPattern == 5) {
+    col = beamScene(u);
   } else if (uPattern == 3) {
     if (uHasTex) col = texture(uTex, vec2(lon / (2.0 * PI) + 0.5, 0.5 - lat / PI)).rgb;
     else col = vec3(0.3);
@@ -167,6 +214,8 @@ export interface FrameUniforms {
   pattern: number;
   bubble: { dir: Vec3; rad: number } | null;   // 気泡（ドーム座標の向き、角半径ラジアン）
   ringScale: number;                           // 水準器の目盛り：傾き1°がドーム上で何度か
+  time: number;                                // 秒
+  beam: { dir: Vec3; len: number } | null;     // 光の指針（ドーム座標の単位ベクトル、石から表面までの長さ mm）
 }
 
 export class Renderer {
@@ -195,7 +244,7 @@ export class Renderer {
     gl.useProgram(prog);
     for (const n of ["uCenter", "uPxPerMm", "uSize", "uLat", "uLon", "uPattern", "uTex", "uHasTex",
       "uR", "uCz", "uZb", "uA", "uAmax", "uN", "uN2", "uGap", "uGlass", "uEye", "uCorr", "uNA", "uNP",
-      "uBubble", "uBubbleDir", "uBubbleRad", "uRingScale"]) this.u[n] = gl.getUniformLocation(prog, n);
+      "uBubble", "uBubbleDir", "uBubbleRad", "uRingScale", "uTime", "uBeamDir", "uBeamLen"]) this.u[n] = gl.getUniformLocation(prog, n);
     this.vao = gl.createVertexArray()!; // 頂点属性なし（gl_VertexID だけで描く）
 
     this.tex = gl.createTexture()!;
@@ -240,6 +289,9 @@ export class Renderer {
     gl.uniform1i(u.uBubble, f.bubble ? 1 : 0);
     if (f.bubble) { gl.uniform3f(u.uBubbleDir, f.bubble.dir.x, f.bubble.dir.y, f.bubble.dir.z); gl.uniform1f(u.uBubbleRad, f.bubble.rad); }
     gl.uniform1f(u.uRingScale, f.ringScale);
+    gl.uniform1f(u.uTime, f.time);
+    gl.uniform3f(u.uBeamDir, f.beam?.dir.x ?? 0, f.beam?.dir.y ?? 0, f.beam?.dir.z ?? 1);
+    gl.uniform1f(u.uBeamLen, f.beam?.len ?? 0);
     gl.uniform1i(u.uHasTex, this.hasTex ? 1 : 0);
     gl.uniform1i(u.uTex, 0);
     gl.activeTexture(gl.TEXTURE0); gl.bindTexture(gl.TEXTURE_2D, this.tex);

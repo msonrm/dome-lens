@@ -24,6 +24,10 @@ export interface Settings extends OpticsParams {
   levelGain: number;            // 気泡の感度（傾き1°で気泡がドーム上を何度動くか）
   levelBias: { x: number; y: number };   // センサーのゼロ点のずれ
   bubbleAll: boolean;           // 水準器以外の模様にも気泡を重ねる
+  // 光の指針
+  beamBearing: number;          // 指す方位（北から時計回り、度）
+  beamElev: number;             // 仰角（度）
+  northOffset: number;          // 方位の補正（度）。磁北と真北のずれや、方位センサーがない端末用
 }
 
 export const DEFAULTS: Settings = {
@@ -35,6 +39,7 @@ export const DEFAULTS: Settings = {
   camX: 0, camY: 50, fxRatio: 0.57, flipX: false, calibD: 300, gain: 1, headDepth: 90,
   showCam: false, showDot: true,
   levelGain: 15, levelBias: { x: 0, y: 0 }, bubbleAll: false,
+  beamBearing: 0, beamElev: 20, northOffset: 0,
 };
 
 const KEY = "domeLens.v1";

@@ -124,8 +124,9 @@ function stopTracking() {
 const units: Record<string, string> = {
   d: "mm", h: "mm", n: "", gap: "mm", glass: "mm", D: "mm", tilt: "°", az: "°", lat: "°", spd: "°/s",
   camX: "mm", camY: "mm", calibD: "mm", gain: "×", headDepth: "mm", levelGain: "×",
+  beamBearing: "°", beamElev: "°", northOffset: "°",
 };
-type NumKey = "d" | "h" | "n" | "gap" | "glass" | "D" | "tilt" | "az" | "lat" | "spd" | "camX" | "camY" | "calibD" | "gain" | "headDepth" | "levelGain";
+type NumKey = "d" | "h" | "n" | "gap" | "glass" | "D" | "tilt" | "az" | "lat" | "spd" | "camX" | "camY" | "calibD" | "gain" | "headDepth" | "levelGain" | "beamBearing" | "beamElev" | "northOffset";
 
 function fmt(k: string, v: number) { return (k === "n" || k === "gain" ? v.toFixed(2) : String(v)) + units[k]; }
 
@@ -136,6 +137,34 @@ let tiltOn = false;
 let zero1: { x: number; y: number } | null = null;
 /** ゼロ点を差し引いた傾き（上向きベクトルの水平成分） */
 function tiltNow() { return { x: tiltSensor.up.x - S.levelBias.x, y: tiltSensor.up.y - S.levelBias.y }; }
+
+/** 端末の座標系のベクトルが地球上でどの方位（北から時計回り、度）を向いているか（補正前） */
+function deviceToEarthBearing(v: Vec3): number {
+  // toDevice の逆を数値で求める代わりに、東・北の単位ベクトルを端末座標に写して内積をとる
+  const e = tiltSensor.toDevice({ x: 1, y: 0, z: 0 }), n = tiltSensor.toDevice({ x: 0, y: 1, z: 0 });
+  const ve = v.x * e.x + v.y * e.y + v.z * e.z, vn = v.x * n.x + v.y * n.y + v.z * n.z;
+  return (Math.atan2(ve, vn) * 180 / Math.PI + 360) % 360;
+}
+
+/** 光の指針の向き（ドーム座標）と、石から表面までの長さ */
+function beamNow(): { dir: Vec3; len: number } | null {
+  const B = (S.beamBearing - S.northOffset) * Math.PI / 180, el = S.beamElev * Math.PI / 180;
+  const earth = { x: Math.sin(B) * Math.cos(el), y: Math.cos(B) * Math.cos(el), z: Math.sin(el) };
+  // センサーがなければ「端末を水平に置き、上端が北」とみなす
+  const d = tiltSensor.active ? tiltSensor.toDevice(earth) : earth;
+  const g = geometry(S);
+  const O = { x: 0, y: 0, z: g.zb + 0.8 };
+  // 石から球面までの距離：|O + t·d − C| = R を解く
+  const oc = { x: O.x, y: O.y, z: O.z - g.cz };
+  const bq = oc.x * d.x + oc.y * d.y + oc.z * d.z;
+  const cq = oc.x * oc.x + oc.y * oc.y + oc.z * oc.z - g.R * g.R;
+  const disc = bq * bq - cq;
+  if (disc < 0) return null;
+  const t = -bq + Math.sqrt(disc);
+  const hitZ = O.z + t * d.z;
+  if (t <= 0 || hitZ < g.zb) return null;            // 底面より下に向いている（画面に潜る）
+  return { dir: d, len: t };
+}
 function toggle(id: string, on: boolean, onText: string, offText: string) {
   const b = $(id); b.classList.toggle("on", on); b.textContent = on ? onText : offText;
 }
@@ -223,6 +252,14 @@ $("bZero2").onclick = () => {
   hint.textContent = `ゼロ点を合わせました（ずれ ${(Math.hypot(S.levelBias.x, S.levelBias.y) * 180 / Math.PI).toFixed(2)}°）。`;
 };
 $("bZeroReset").onclick = () => { S.levelBias = { x: 0, y: 0 }; zero1 = null; save(S); hint.textContent = "ゼロ点を初期状態に戻しました。"; };
+$("bNorthHere").onclick = () => {
+  if (!tiltSensor.active) { hint.textContent = "先に「水準器」欄で傾きセンサーを有効にしてください。"; return; }
+  // 今の端末上端の水平な向きが「北」になるよう補正する
+  const top = deviceToEarthBearing({ x: 0, y: 1, z: 0 });
+  S.northOffset = Math.round(((-top + 540) % 360) - 180);
+  syncInputs(); save(S);
+  hint.textContent = `方位の補正を ${S.northOffset}° にしました。`;
+};
 $("bImg").onclick = () => $("file").click();
 $<HTMLInputElement>("file").addEventListener("change", e => {
   const f = (e.target as HTMLInputElement).files?.[0]; if (!f) return;
@@ -296,6 +333,7 @@ function frame(now: number) {
   const ppm = pxPerMm();
   renderer.draw({
     bubble: bubbleU, ringScale: S.levelGain,
+    time: now / 1000, beam: S.pattern === 5 ? beamNow() : null,
     optics: S, eye: E, corrected: S.corr,
     centerPx: [S.cal!.cx, S.cal!.cy], pxPerMm: ppm, sizePx: [W, H],
     lat: S.lat * Math.PI / 180, lon, pattern: S.pattern,

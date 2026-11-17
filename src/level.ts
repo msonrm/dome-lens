@@ -7,19 +7,56 @@
 
 export interface Tilt { x: number; y: number; }   // 上向きベクトルの水平成分（≒ 傾きのラジアン）
 
+type V3 = { x: number; y: number; z: number };
+
 export class TiltSensor {
-  up = { x: 0, y: 0, z: 1 };
+  up: V3 = { x: 0, y: 0, z: 1 };
   active = false;
-  private handler = (e: DeviceOrientationEvent) => {
-    if (e.beta === null || e.gamma === null) return;
-    const b = e.beta * Math.PI / 180, g = e.gamma * Math.PI / 180;
-    let x = -Math.sin(g) * Math.cos(b), y = Math.sin(b);
-    const z = Math.cos(b) * Math.cos(g);
+  /** 方位が取れているか（北を基準にした alpha） */
+  compass = false;
+  private a = 0; private b = 0; private g = 0;   // ラジアン
+  private gotAbsolute = false;
+
+  private update(alphaDeg: number | null, betaDeg: number, gammaDeg: number, absolute: boolean) {
+    this.b = betaDeg * Math.PI / 180; this.g = gammaDeg * Math.PI / 180;
+    if (alphaDeg !== null) {
+      if (absolute) { this.a = alphaDeg * Math.PI / 180; this.compass = true; }
+      else if (!this.gotAbsolute) this.a = alphaDeg * Math.PI / 180;
+    }
+    this.up = this.toDevice({ x: 0, y: 0, z: 1 });
+    this.active = true;
+  }
+
+  /**
+   * 地球の座標系（x 東、y 北、z 上）のベクトルを端末の座標系に直す。
+   * 端末→地球の回転は R = Rz(α)·Rx(β)·Ry(γ)（W3C の定義）なので、その転置をかける。
+   */
+  toDevice(v: V3): V3 {
+    const ca = Math.cos(this.a), sa = Math.sin(this.a), cb = Math.cos(this.b), sb = Math.sin(this.b), cg = Math.cos(this.g), sg = Math.sin(this.g);
+    // Rz^T
+    let x = ca * v.x + sa * v.y, y = -sa * v.x + ca * v.y, z = v.z;
+    // Rx^T
+    [y, z] = [cb * y + sb * z, -sb * y + cb * z];
+    // Ry^T
+    [x, z] = [cg * x - sg * z, sg * x + cg * z];
     // 画面が回転している場合（横向き表示）は、画面の座標系に合わせて回す
     const ang = (screen.orientation?.angle ?? 0) * Math.PI / 180;
     if (ang) { const c = Math.cos(ang), s = Math.sin(ang); [x, y] = [c * x + s * y, -s * x + c * y]; }
-    this.up = { x, y, z };
-    this.active = true;
+    return { x, y, z };
+  }
+
+  private handler = (e: DeviceOrientationEvent) => {
+    if (e.beta === null || e.gamma === null) return;
+    // iOS / iPadOS：方位は webkitCompassHeading（北から時計回り）。alpha は反時計回りなので符号を反転
+    const heading = (e as unknown as { webkitCompassHeading?: number }).webkitCompassHeading;
+    if (typeof heading === "number" && !Number.isNaN(heading)) this.update(360 - heading, e.beta, e.gamma, true);
+    else this.update(e.alpha, e.beta, e.gamma, e.absolute === true);
+  };
+  // Android Chrome：北を基準にした alpha は deviceorientationabsolute で届く
+  private absHandler = (e: DeviceOrientationEvent) => {
+    if (e.beta === null || e.gamma === null || e.alpha === null) return;
+    this.gotAbsolute = true;
+    this.update(e.alpha, e.beta, e.gamma, true);
   };
 
   /** ボタンを押したときに呼ぶ（iOS / iPadOS は許可ダイアログが必要） */
@@ -30,9 +67,14 @@ export class TiltSensor {
       if (r !== "granted") throw new Error("傾きセンサーの使用が許可されませんでした");
     }
     window.addEventListener("deviceorientation", this.handler);
+    window.addEventListener("deviceorientationabsolute", this.absHandler as EventListener);
   }
 
-  stop() { window.removeEventListener("deviceorientation", this.handler); this.active = false; }
+  stop() {
+    window.removeEventListener("deviceorientation", this.handler);
+    window.removeEventListener("deviceorientationabsolute", this.absHandler as EventListener);
+    this.active = false;
+  }
 }
 
 /** 気泡の動き：バネとダンパーで目標位置に追従させる（液体の中の気泡らしい遅れ） */
