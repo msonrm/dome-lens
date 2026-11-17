@@ -20,6 +20,10 @@ export interface Settings extends OpticsParams {
   headDepth: number;            // 「頭の中心」モードで、両目の中点から頭の回転軸までの奥行き（mm）                 // 感度（横方向のずれの倍率。1.0 が物理的に正しい値）
   showCam: boolean;
   showDot: boolean;
+  // 水準器
+  levelGain: number;            // 気泡の感度（傾き1°で気泡がドーム上を何度動くか）
+  levelBias: { x: number; y: number };   // センサーのゼロ点のずれ
+  bubbleAll: boolean;           // 水準器以外の模様にも気泡を重ねる
 }
 
 export const DEFAULTS: Settings = {
@@ -30,6 +34,7 @@ export const DEFAULTS: Settings = {
   track: false, eyeMode: "head",
   camX: 0, camY: 50, fxRatio: 0.57, flipX: false, calibD: 300, gain: 1, headDepth: 90,
   showCam: false, showDot: true,
+  levelGain: 15, levelBias: { x: 0, y: 0 }, bubbleAll: false,
 };
 
 const KEY = "domeLens.v1";

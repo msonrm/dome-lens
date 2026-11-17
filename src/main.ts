@@ -1,9 +1,10 @@
 import "./style.css";
-import { eyeFromAngles, type Vec3 } from "./optics";
+import { eyeFromAngles, geometry, type Vec3 } from "./optics";
 import { Renderer } from "./renderer";
 import { EyeDetector } from "./detector";
 import { IRIS_MM, type FaceObs } from "./face";
 import { OneEuro } from "./filter";
+import { TiltSensor, Bubble } from "./level";
 import { DEFAULTS, load, save, type Settings, type EyeMode } from "./settings";
 
 const $ = <T extends HTMLElement = HTMLElement>(id: string) => document.getElementById(id) as T;
@@ -122,11 +123,19 @@ function stopTracking() {
 // ---------- UI ----------
 const units: Record<string, string> = {
   d: "mm", h: "mm", n: "", gap: "mm", glass: "mm", D: "mm", tilt: "°", az: "°", lat: "°", spd: "°/s",
-  camX: "mm", camY: "mm", calibD: "mm", gain: "×", headDepth: "mm",
+  camX: "mm", camY: "mm", calibD: "mm", gain: "×", headDepth: "mm", levelGain: "×",
 };
-type NumKey = "d" | "h" | "n" | "gap" | "glass" | "D" | "tilt" | "az" | "lat" | "spd" | "camX" | "camY" | "calibD" | "gain" | "headDepth";
+type NumKey = "d" | "h" | "n" | "gap" | "glass" | "D" | "tilt" | "az" | "lat" | "spd" | "camX" | "camY" | "calibD" | "gain" | "headDepth" | "levelGain";
 
 function fmt(k: string, v: number) { return (k === "n" || k === "gain" ? v.toFixed(2) : String(v)) + units[k]; }
+
+// ---------- 水準器 ----------
+const tiltSensor = new TiltSensor();
+const bubble = new Bubble();
+let tiltOn = false;
+let zero1: { x: number; y: number } | null = null;
+/** ゼロ点を差し引いた傾き（上向きベクトルの水平成分） */
+function tiltNow() { return { x: tiltSensor.up.x - S.levelBias.x, y: tiltSensor.up.y - S.levelBias.y }; }
 function toggle(id: string, on: boolean, onText: string, offText: string) {
   const b = $(id); b.classList.toggle("on", on); b.textContent = on ? onText : offText;
 }
@@ -144,6 +153,8 @@ function syncInputs() {
   toggle("bFlip", S.flipX, "左右反転 ON", "左右反転 OFF");
   toggle("bDot", S.showDot, "目のマーカー ON", "目のマーカー OFF");
   toggle("bCamView", S.showCam, "カメラ映像 ON", "カメラ映像 OFF");
+  toggle("bTilt", tiltOn, "傾きセンサー 動作中", "傾きセンサーを有効にする");
+  toggle("bBubbleAll", S.bubbleAll, "他の模様にも気泡 ON", "他の模様にも気泡 OFF");
   video.style.display = S.track && S.showCam ? "block" : "none";
 }
 for (const k of Object.keys(units) as NumKey[]) {
@@ -191,6 +202,27 @@ $("bCalib").onclick = () => {
   hint.textContent = `距離を校正しました（係数 ${S.fxRatio.toFixed(3)}）。`;
   save(S);
 };
+$("bTilt").onclick = async () => {
+  if (tiltOn) { tiltSensor.stop(); tiltOn = false; syncInputs(); return; }
+  try { await tiltSensor.start(); tiltOn = true; if (S.pattern !== 4 && !S.bubbleAll) { S.pattern = 4; save(S); } }
+  catch (e) { hint.textContent = e instanceof Error ? e.message : String(e); }
+  syncInputs();
+};
+$("bBubbleAll").onclick = () => { S.bubbleAll = !S.bubbleAll; syncInputs(); save(S); };
+$("bZero1").onclick = () => {
+  if (!tiltSensor.active) { hint.textContent = "先に傾きセンサーを有効にしてください。"; return; }
+  zero1 = { x: tiltSensor.up.x, y: tiltSensor.up.y };
+  hint.textContent = "1回目を記録しました。同じ場所でスマホを 180° 回して「2回目」を押してください。";
+};
+$("bZero2").onclick = () => {
+  if (!zero1) { hint.textContent = "先に 1回目を押してください。"; return; }
+  // 置いた面の傾きは 180° 回すと端末から見て逆向きになり、センサーのずれは変わらない。
+  // 2回の平均がセンサーのずれ
+  S.levelBias = { x: (zero1.x + tiltSensor.up.x) / 2, y: (zero1.y + tiltSensor.up.y) / 2 };
+  zero1 = null; save(S);
+  hint.textContent = `ゼロ点を合わせました（ずれ ${(Math.hypot(S.levelBias.x, S.levelBias.y) * 180 / Math.PI).toFixed(2)}°）。`;
+};
+$("bZeroReset").onclick = () => { S.levelBias = { x: 0, y: 0 }; zero1 = null; save(S); hint.textContent = "ゼロ点を初期状態に戻しました。"; };
 $("bImg").onclick = () => $("file").click();
 $<HTMLInputElement>("file").addEventListener("change", e => {
   const f = (e.target as HTMLInputElement).files?.[0]; if (!f) return;
@@ -246,8 +278,24 @@ function frame(now: number) {
   if (S.track) detector.tick(now);
   const E = currentEye(dt);
 
+  // 気泡：上向きベクトルの水平成分（傾き）の方向へ、傾き×感度の角度だけ頂点からずれる
+  let bubbleU: { dir: Vec3; rad: number } | null = null;
+  const levelGain = S.pattern === 4 ? S.levelGain : 1;   // 他の模様では本物の気泡と同じ動き
+  if (tiltOn && tiltSensor.active && (S.pattern === 4 || S.bubbleAll)) {
+    const t = tiltNow();
+    const tilt = Math.asin(Math.min(1, Math.hypot(t.x, t.y)));
+    const g = geometry(S);
+    const rad = 9 * Math.PI / 180;
+    const pol = Math.min(tilt * levelGain, Math.max(0, g.amax - rad * 1.2));
+    const az = Math.atan2(t.y, t.x);
+    bubble.step(pol * Math.cos(az), pol * Math.sin(az), dt);
+    const p = Math.hypot(bubble.x, bubble.y), a = Math.atan2(bubble.y, bubble.x);
+    bubbleU = { dir: { x: Math.sin(p) * Math.cos(a), y: Math.sin(p) * Math.sin(a), z: Math.cos(p) }, rad };
+  }
+
   const ppm = pxPerMm();
   renderer.draw({
+    bubble: bubbleU, ringScale: S.levelGain,
     optics: S, eye: E, corrected: S.corr,
     centerPx: [S.cal!.cx, S.cal!.cy], pxPerMm: ppm, sizePx: [W, H],
     lat: S.lat * Math.PI / 180, lon, pattern: S.pattern,
@@ -266,7 +314,12 @@ function frame(now: number) {
     const tilt = Math.atan2(r, E.z) * 180 / Math.PI;
     const az = (Math.atan2(E.y, E.x) * 180 / Math.PI + 360) % 360;
     const head = S.track ? `[${trackStatus} 検出${detector.rate.toFixed(0)}/s] ` : "[手動] ";
-    hud.textContent = `${head}描画${fps.toFixed(0)}fps ／ 目 x${E.x.toFixed(0)} y${E.y.toFixed(0)} z${E.z.toFixed(0)}mm ／ 傾き${tilt.toFixed(1)}° 方向${az.toFixed(0)}°`;
+    let lv = "";
+    if (tiltOn && tiltSensor.active) {
+      const t = tiltNow();
+      lv = ` ／ 端末の傾き ${(Math.asin(Math.min(1, Math.hypot(t.x, t.y))) * 180 / Math.PI).toFixed(2)}°`;
+    }
+    hud.textContent = `${head}描画${fps.toFixed(0)}fps ／ 視点 x${E.x.toFixed(0)} y${E.y.toFixed(0)} z${E.z.toFixed(0)}mm 傾き${tilt.toFixed(1)}° 方向${az.toFixed(0)}°${lv}`;
   }
   requestAnimationFrame(frame);
 }

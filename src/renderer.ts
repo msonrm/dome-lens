@@ -73,6 +73,7 @@ const FS = `#version 300 es
 precision highp float;
 in vec3 vDir;
 uniform float uLat, uLon; uniform int uPattern; uniform sampler2D uTex; uniform bool uHasTex;
+uniform bool uBubble; uniform vec3 uBubbleDir; uniform float uBubbleRad; uniform float uRingScale;
 out vec4 o;
 const float PI = 3.14159265;
 float hash(vec3 p){ p = fract(p * 0.3183099 + 0.1); p *= 17.0; return fract(p.x * p.y * p.z * (p.x + p.y + p.z)); }
@@ -124,9 +125,33 @@ void main(){
     col = mix(col, vec3(0.95), smoothstep(0.80, 0.86, abs(g.z)));
     float cloud = smoothstep(0.55, 0.75, fbm(g * 4.0 + vec3(uLon * 0.3, 0.0, 7.0)));
     col = mix(col, vec3(1.0), cloud * 0.6);
-  } else {
+  } else if (uPattern == 3) {
     if (uHasTex) col = texture(uTex, vec2(lon / (2.0 * PI) + 0.5, 0.5 - lat / PI)).rgb;
     else col = vec3(0.3);
+  } else {
+    // 水準器：液体の色、目盛りの円（傾き 0.5°・1°・2°）、十字線。ドームに固定（地球儀の回転は無関係）
+    float pol = degrees(acos(clamp(u.z, -1.0, 1.0)));
+    float w = fwidth(pol);
+    col = mix(vec3(0.62, 0.80, 0.22), vec3(0.30, 0.48, 0.10), smoothstep(0.0, 80.0, pol));
+    for (int r = 0; r < 3; r++) {
+      float tilt = r == 0 ? 0.5 : (r == 1 ? 1.0 : 2.0);
+      col = mix(col, vec3(0.05), lineMask(abs(pol - tilt * uRingScale), w * (r == 1 ? 1.6 : 1.0)) * 0.85);
+    }
+    float wx = fwidth(u.x), wy = fwidth(u.y);
+    float crossMask = max(lineMask(abs(u.x), wx), lineMask(abs(u.y), wy)) * step(0.0, u.z);
+    col = mix(col, vec3(0.05), crossMask * 0.5);
+  }
+  if (uBubble) {
+    // 気泡：縁が暗く、中は明るく、上にハイライト
+    float d = acos(clamp(dot(u, uBubbleDir), -1.0, 1.0));
+    float fw = fwidth(d);
+    float inside = 1.0 - smoothstep(uBubbleRad - fw, uBubbleRad + fw, d);
+    float rim = smoothstep(uBubbleRad * 0.55, uBubbleRad, d) * inside;
+    vec3 bub = mix(vec3(0.92, 0.96, 0.85), vec3(0.15, 0.2, 0.1), rim * 0.9);
+    vec3 hlDir = normalize(uBubbleDir + vec3(-0.35, 0.35, 0.0) * uBubbleRad);
+    float hl = 1.0 - smoothstep(uBubbleRad * 0.12, uBubbleRad * 0.25, acos(clamp(dot(u, hlDir), -1.0, 1.0)));
+    bub = mix(bub, vec3(1.0), hl);
+    col = mix(col, bub, inside);
   }
   o = vec4(col, 1.0);
 }`;
@@ -140,6 +165,8 @@ export interface FrameUniforms {
   sizePx: [number, number];
   lat: number; lon: number;   // ラジアン
   pattern: number;
+  bubble: { dir: Vec3; rad: number } | null;   // 気泡（ドーム座標の向き、角半径ラジアン）
+  ringScale: number;                           // 水準器の目盛り：傾き1°がドーム上で何度か
 }
 
 export class Renderer {
@@ -167,7 +194,8 @@ export class Renderer {
     this.prog = prog;
     gl.useProgram(prog);
     for (const n of ["uCenter", "uPxPerMm", "uSize", "uLat", "uLon", "uPattern", "uTex", "uHasTex",
-      "uR", "uCz", "uZb", "uA", "uAmax", "uN", "uN2", "uGap", "uGlass", "uEye", "uCorr", "uNA", "uNP"]) this.u[n] = gl.getUniformLocation(prog, n);
+      "uR", "uCz", "uZb", "uA", "uAmax", "uN", "uN2", "uGap", "uGlass", "uEye", "uCorr", "uNA", "uNP",
+      "uBubble", "uBubbleDir", "uBubbleRad", "uRingScale"]) this.u[n] = gl.getUniformLocation(prog, n);
     this.vao = gl.createVertexArray()!; // 頂点属性なし（gl_VertexID だけで描く）
 
     this.tex = gl.createTexture()!;
@@ -209,6 +237,9 @@ export class Renderer {
     gl.uniform1f(u.uLat, f.lat);
     gl.uniform1f(u.uLon, f.lon);
     gl.uniform1i(u.uPattern, f.pattern);
+    gl.uniform1i(u.uBubble, f.bubble ? 1 : 0);
+    if (f.bubble) { gl.uniform3f(u.uBubbleDir, f.bubble.dir.x, f.bubble.dir.y, f.bubble.dir.z); gl.uniform1f(u.uBubbleRad, f.bubble.rad); }
+    gl.uniform1f(u.uRingScale, f.ringScale);
     gl.uniform1i(u.uHasTex, this.hasTex ? 1 : 0);
     gl.uniform1i(u.uTex, 0);
     gl.activeTexture(gl.TEXTURE0); gl.bindTexture(gl.TEXTURE_2D, this.tex);
