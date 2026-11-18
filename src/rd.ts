@@ -89,14 +89,34 @@ precision highp float;
 ${CUBE_GLSL}
 ${CELL_GLSL}
 uniform float uSeed;
+uniform bool uKeep;          // true なら今の状態を残して種を足す
+uniform float uDensity;      // 種の密度（0〜1）
+uniform sampler2D uPrev;
 out vec4 o;
 float hash(vec3 p){ p = fract(p * 0.3183099 + uSeed); p *= 17.0; return fract(p.x * p.y * p.z * (p.x + p.y + p.z)); }
 void main(){
+  ivec2 px = ivec2(gl_FragCoord.xy);
   vec3 e1, e2;
-  vec3 p = cellDir(ivec2(gl_FragCoord.xy), e1, e2);
+  vec3 p = cellDir(px, e1, e2);
+  vec2 base = uKeep ? texelFetch(uPrev, px, 0).rg : vec2(1.0, 0.0);
   // 球面上にまばらな小さい種をまく
-  float s = step(0.93, hash(floor(p * uN * 0.12)));
-  o = vec4(1.0 - 0.5 * s, 0.25 * s, 0.0, 1.0);
+  float s = step(1.0 - uDensity, hash(floor(p * uN * 0.12)));
+  o = vec4(mix(base, vec2(0.5, 0.25), s), 0.0, 1.0);
+}`;
+
+// 模様が消えていないかを調べるための縮小：8×8 の各画素に、受け持つ範囲の V の最大値を書く
+const PROBE_FS = `#version 300 es
+precision highp float;
+uniform sampler2D uPrev;
+out vec4 o;
+void main(){
+  vec2 cell = floor(gl_FragCoord.xy);
+  float m = 0.0;
+  for (int j = 0; j < 8; j++) for (int i = 0; i < 8; i++) {
+    vec2 uv = (cell + (vec2(float(i), float(j)) + 0.5) / 8.0) / 8.0;
+    m = max(m, texture(uPrev, uv).g);
+  }
+  o = vec4(m, 0.0, 0.0, 1.0);
 }`;
 
 export interface RDParams {
@@ -115,6 +135,10 @@ export class ReactionDiffusion {
   private vao: WebGLVertexArrayObject;
   private su: Record<string, WebGLUniformLocation | null> = {};
   private seedU: Record<string, WebGLUniformLocation | null> = {};
+  private probeProg: WebGLProgram;
+  private probeTex: WebGLTexture;
+  private probeFbo: WebGLFramebuffer;
+  private probeBuf = new Uint8Array(8 * 8 * 4);
   n = 0;
 
   constructor(private gl: WebGL2RenderingContext, n: number) {
@@ -134,7 +158,15 @@ export class ReactionDiffusion {
     this.stepProg = prog(STEP_FS);
     this.seedProg = prog(SEED_FS);
     for (const k of ["uPrev", "uN", "uParamA", "uParamB", "uAxis", "uBlendW"]) this.su[k] = gl.getUniformLocation(this.stepProg, k);
-    for (const k of ["uN", "uSeed"]) this.seedU[k] = gl.getUniformLocation(this.seedProg, k);
+    for (const k of ["uN", "uSeed", "uKeep", "uDensity", "uPrev"]) this.seedU[k] = gl.getUniformLocation(this.seedProg, k);
+    this.probeProg = prog(PROBE_FS);
+    this.probeTex = gl.createTexture()!;
+    gl.bindTexture(gl.TEXTURE_2D, this.probeTex);
+    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA8, 8, 8, 0, gl.RGBA, gl.UNSIGNED_BYTE, null);
+    this.probeFbo = gl.createFramebuffer()!;
+    gl.bindFramebuffer(gl.FRAMEBUFFER, this.probeFbo);
+    gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, this.probeTex, 0);
+    gl.bindFramebuffer(gl.FRAMEBUFFER, null);
     this.vao = gl.createVertexArray()!;
     this.resize(n);
   }
@@ -164,18 +196,62 @@ export class ReactionDiffusion {
 
   /** 最初の状態（まばらな種）に戻す */
   seed() {
-    const gl = this.gl;
+    const gl = this.gl, u = this.seedU;
     gl.useProgram(this.seedProg);
-    gl.uniform1f(this.seedU.uN, this.n);
-    gl.uniform1f(this.seedU.uSeed, Math.random());
+    gl.uniform1f(u.uN, this.n);
+    gl.uniform1f(u.uSeed, Math.random());
+    gl.uniform1i(u.uKeep, 0);
+    gl.uniform1f(u.uDensity, 0.07);
+    gl.uniform1i(u.uPrev, 0);
     gl.bindVertexArray(this.vao);
     gl.viewport(0, 0, 3 * this.n, 2 * this.n);
+    // 書き込み先のテクスチャが読み込み側にも付いていると「フィードバックループ」になるので、無関係なテクスチャを付けておく
+    gl.activeTexture(gl.TEXTURE0);
+    gl.bindTexture(gl.TEXTURE_2D, this.probeTex);
     for (let i = 0; i < 2; i++) {
       gl.bindFramebuffer(gl.FRAMEBUFFER, this.fbo[i]);
       gl.drawArrays(gl.TRIANGLES, 0, 3);
     }
     gl.bindFramebuffer(gl.FRAMEBUFFER, null);
     this.cur = 0;
+  }
+
+  /** 今の状態を残したまま種を足す（模様が消えたときの立て直し） */
+  sprinkle(density = 0.04) {
+    const gl = this.gl, u = this.seedU;
+    gl.useProgram(this.seedProg);
+    gl.uniform1f(u.uN, this.n);
+    gl.uniform1f(u.uSeed, Math.random());
+    gl.uniform1i(u.uKeep, 1);
+    gl.uniform1f(u.uDensity, density);
+    gl.uniform1i(u.uPrev, 0);
+    gl.bindVertexArray(this.vao);
+    gl.viewport(0, 0, 3 * this.n, 2 * this.n);
+    gl.activeTexture(gl.TEXTURE0);
+    const next = 1 - this.cur;
+    gl.bindFramebuffer(gl.FRAMEBUFFER, this.fbo[next]);
+    gl.bindTexture(gl.TEXTURE_2D, this.tex[this.cur]);
+    gl.drawArrays(gl.TRIANGLES, 0, 3);
+    gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+    this.cur = next;
+  }
+
+  /** 球全体での V の最大値（おおよそ）。0 に近ければ模様が消えている */
+  maxV(): number {
+    const gl = this.gl;
+    gl.useProgram(this.probeProg);
+    gl.uniform1i(gl.getUniformLocation(this.probeProg, "uPrev"), 0);
+    gl.bindVertexArray(this.vao);
+    gl.viewport(0, 0, 8, 8);
+    gl.activeTexture(gl.TEXTURE0);
+    gl.bindTexture(gl.TEXTURE_2D, this.tex[this.cur]);
+    gl.bindFramebuffer(gl.FRAMEBUFFER, this.probeFbo);
+    gl.drawArrays(gl.TRIANGLES, 0, 3);
+    gl.readPixels(0, 0, 8, 8, gl.RGBA, gl.UNSIGNED_BYTE, this.probeBuf);
+    gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+    let m = 0;
+    for (let i = 0; i < this.probeBuf.length; i += 4) m = Math.max(m, this.probeBuf[i]);
+    return m / 255;
   }
 
   step(count: number, p: RDParams) {

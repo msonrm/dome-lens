@@ -116,14 +116,20 @@ function ensureRD(): ReactionDiffusion | null {
 }
 for (const id of ["rdPresetA", "rdPresetB"]) {
   const sel = $<HTMLSelectElement>(id);
-  sel.innerHTML = `<option value="-1">プリセットを選ぶ…</option>` + RD_PRESETS.map((p, i) => `<option value="${i}">${p.name}（${p.f} / ${p.k}）</option>`).join("");
+  sel.innerHTML = `<option value="-1">カスタム（スライダーの値）</option>` + RD_PRESETS.map((p, i) => `<option value="${i}">${p.name}（${p.f} / ${p.k}）</option>`).join("");
   sel.addEventListener("change", () => {
     const i = parseInt(sel.value, 10); if (i < 0) return;
     const pr = RD_PRESETS[i];
     if (id === "rdPresetA") { P.rdFA = pr.f; P.rdKA = pr.k; } else { P.rdFB = pr.f; P.rdKB = pr.k; }
-    sel.value = "-1"; sync(); saveAll();
+    sync(); saveAll();
   });
 }
+/** 今の供給率・除去率に一致するプリセットの番号（なければ -1 ＝カスタム） */
+function presetIndex(f: number, k: number) {
+  return RD_PRESETS.findIndex(p => Math.abs(p.f - f) < 1e-6 && Math.abs(p.k - k) < 1e-6);
+}
+// 模様が消えていたら種を足して立て直す（パラメータによっては模様が全滅するため）
+let probeAt = 0;
 function toggle(id: string, on: boolean, onText: string, offText: string) {
   const b = $(id); b.classList.toggle("on", on); b.textContent = on ? onText : offText;
 }
@@ -135,6 +141,8 @@ function sync() {
   $<HTMLSelectElement>("wallPat").value = String(P.wallPat);
   $<HTMLSelectElement>("rdRes").value = String(P.rdRes);
   $<HTMLSelectElement>("rdVary").value = String(P.rdVary);
+  $<HTMLSelectElement>("rdPresetA").value = String(presetIndex(P.rdFA, P.rdKA));
+  $<HTMLSelectElement>("rdPresetB").value = String(presetIndex(P.rdFB, P.rdKB));
   toggle("bTilt", tiltOn, "傾きセンサー 動作中", "傾きセンサーを有効にする");
 }
 for (const k of sKeys) $<HTMLInputElement>(k).addEventListener("input", e => {
@@ -262,6 +270,10 @@ function frame(now: number) {
         axis: [Math.sin(t), 0, Math.cos(t)],
         blend: P.rdVary ? P.rdBlend : 0,
       });
+      if (now - probeAt > 1500) {
+        probeAt = now;
+        if (field.maxV() < 0.04) field.sprinkle();
+      }
     }
   }
 
