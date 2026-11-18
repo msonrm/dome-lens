@@ -99,9 +99,10 @@ void main(){
   vec3 e1, e2;
   vec3 p = cellDir(px, e1, e2);
   vec2 base = uKeep ? texelFetch(uPrev, px, 0).rg : vec2(1.0, 0.0);
-  // 球面上にまばらな小さい種をまく
+  // 球面上にまばらな小さい種をまく。
+  // 供給率が高い領域（虫・サンゴなど）は V の弱い種だと消えてしまうので、V を強めにする
   float s = step(1.0 - uDensity, hash(floor(p * uN * 0.12)));
-  o = vec4(mix(base, vec2(0.5, 0.25), s), 0.0, 1.0);
+  o = vec4(mix(base, vec2(0.5, 0.5), s), 0.0, 1.0);
 }`;
 
 // 模様が消えていないかを調べるための縮小：8×8 の各画素に、受け持つ範囲の V の最大値を書く
@@ -288,5 +289,5 @@ export const RD_PRESETS: { name: string; f: number; k: number }[] = [
   { name: "穴あき", f: 0.039, k: 0.058 },
   { name: "サンゴ", f: 0.0545, k: 0.062 },
   { name: "うごめく虫", f: 0.078, k: 0.061 },
-  { name: "波", f: 0.014, k: 0.045 },
+  { name: "揺らぐ混沌", f: 0.026, k: 0.051 },
 ];
