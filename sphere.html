@@ -38,8 +38,12 @@
     <label class="s">小球の大きさ<input id="ratio" type="range" min="0.2" max="0.92" step="0.01"><output></output></label>
     <label class="s">上に来る緯度<input id="lat" type="range" min="-90" max="90" step="1"><output></output></label>
     <label class="s">自転の速さ<input id="spd" type="range" min="-60" max="60" step="1"><output></output></label>
-    <label class="s">光の方向<input id="lightAz" type="range" min="0" max="355" step="5"><output></output></label>
     <label class="s">光の高さ<input id="lightElev" type="range" min="10" max="89" step="1"><output></output></label>
+    <label class="s">光の方位<input id="lightBearing" type="range" min="0" max="359" step="1"><output></output></label>
+    <div class="row"><button id="bLightHere">光を今の画面の「光の方向」に合わせる</button></div>
+    <label class="s">光の方向<input id="lightAz" type="range" min="0" max="355" step="5"><output></output></label>
+    <label class="s">小球の追従<input id="followTau" type="range" min="0.2" max="10" step="0.1"><output></output></label>
+    <div class="hint">センサー使用中は、光は部屋に固定されます（光の方位＝北から時計回り）。部屋の照明に合わせるには、画面の左上が照明の方を向くように持ってボタンを押します。光の方向＝画面上の向き（右が 0°、左上が 135°）で、センサー未使用時とボタンの基準に使います。小球の追従＝スマホを水平に回したとき、小球が追いつくまでの時間。</div>
     <label class="s">見る距離<input id="D" type="range" min="100" max="800" step="10"><output></output></label>
   </details>
 

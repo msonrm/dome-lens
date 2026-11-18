@@ -15,8 +15,10 @@ const S: Settings = load();
 interface PageSettings {
   ratio: number; ballPat: number; wallPat: number;
   lat: number; spd: number; lightAz: number; lightElev: number; D: number;
+  lightBearing: number;   // 方位が取れるときの光の方位（北から時計回り、度）
+  followTau: number;      // 端末を水平に回したとき、小球が追いつくまでの時間（秒）
 }
-const PDEF: PageSettings = { ratio: 0.6, ballPat: 0, wallPat: 1, lat: 35, spd: 6, lightAz: 135, lightElev: 55, D: 300 };
+const PDEF: PageSettings = { ratio: 0.6, ballPat: 0, wallPat: 1, lat: 35, spd: 6, lightAz: 135, lightElev: 55, D: 300, lightBearing: 315, followTau: 3 };
 const PKEY = "domeLens.sphere.v1";
 const P: PageSettings = { ...PDEF };
 try { Object.assign(P, JSON.parse(localStorage.getItem(PKEY) ?? "{}")); } catch { /* 既定値で動く */ }
@@ -83,13 +85,13 @@ let ballUp: Vec3 = { x: 0, y: 0, z: 1 };
 
 // ---------- UI ----------
 type SKey = "d" | "h" | "n" | "gap" | "glass";
-type PKey = "ratio" | "lat" | "spd" | "lightAz" | "lightElev" | "D";
+type PKey = "ratio" | "lat" | "spd" | "lightAz" | "lightElev" | "D" | "lightBearing" | "followTau";
 const units: Record<string, string> = {
   d: "mm", h: "mm", n: "", gap: "mm", glass: "mm",
-  ratio: "×", lat: "°", spd: "°/s", lightAz: "°", lightElev: "°", D: "mm",
+  ratio: "×", lat: "°", spd: "°/s", lightAz: "°", lightElev: "°", D: "mm", lightBearing: "°", followTau: "秒",
 };
 const sKeys: SKey[] = ["d", "h", "n", "gap", "glass"];
-const pKeys: PKey[] = ["ratio", "lat", "spd", "lightAz", "lightElev", "D"];
+const pKeys: PKey[] = ["ratio", "lat", "spd", "lightAz", "lightElev", "D", "lightBearing", "followTau"];
 const fmt = (k: string, v: number) => (k === "n" || k === "ratio" ? v.toFixed(2) : String(v)) + units[k];
 function toggle(id: string, on: boolean, onText: string, offText: string) {
   const b = $(id); b.classList.toggle("on", on); b.textContent = on ? onText : offText;
@@ -119,6 +121,14 @@ $("bTilt").onclick = async () => {
   try { await tilt.start(); tiltOn = true; } catch (e) { hint.textContent = e instanceof Error ? e.message : String(e); }
   sync();
 };
+$("bLightHere").onclick = () => {
+  if (!tiltOn || !tilt.active) { hint.textContent = "先に傾きセンサーを有効にしてください。"; return; }
+  // 画面上で「光の方向」（初期値は左上）にあたる向きが、地球上でどの方位かを求めて光の方位にする
+  const a = P.lightAz * Math.PI / 180;
+  P.lightBearing = Math.round(bearingOf({ x: Math.cos(a), y: Math.sin(a), z: 0 }));
+  sync(); saveAll();
+  hint.textContent = `光の方位を ${P.lightBearing}° にしました。`;
+};
 $("bHide").onclick = () => {
   calMode = false; $("bCal").classList.remove("on"); placeRing();
   $("ui").classList.add("hidden"); $("show").style.display = "block";
@@ -139,6 +149,23 @@ void keepAwake();
 // ---------- 描画ループ ----------
 const norm = (v: Vec3): Vec3 => { const l = Math.hypot(v.x, v.y, v.z) || 1; return { x: v.x / l, y: v.y / l, z: v.z / l }; };
 const cross = (a: Vec3, b: Vec3): Vec3 => ({ x: a.y * b.z - a.z * b.y, y: a.z * b.x - a.x * b.z, z: a.x * b.y - a.y * b.x });
+const dot = (a: Vec3, b: Vec3) => a.x * b.x + a.y * b.y + a.z * b.z;
+
+/** 端末座標のベクトルが地球上でどの方位を向いているか（北から時計回り、度） */
+function bearingOf(v: Vec3): number {
+  const e = tilt.toDevice({ x: 1, y: 0, z: 0 }), n = tilt.toDevice({ x: 0, y: 1, z: 0 });
+  return (Math.atan2(dot(v, e), dot(v, n)) * 180 / Math.PI + 360) % 360;
+}
+/** v から axis 方向の成分を除いて正規化（直交化） */
+function orthoTo(v: Vec3, axis: Vec3): Vec3 {
+  const k = dot(v, axis);
+  return norm({ x: v.x - axis.x * k, y: v.y - axis.y * k, z: v.z - axis.z * k });
+}
+
+// 小球の水平方向の向き（x 軸の方位、度）。端末を回すと、その場に留まってから液体に引きずられて追いつく
+let ballHeading: number | null = null;
+// 光の向き（端末座標）。方位センサーの細かい揺れを抑えるために平滑化する
+let lightSm: Vec3 | null = null;
 const hud = $("hud");
 let lon = 139.7 * Math.PI / 180, prev = performance.now(), hudAt = 0;
 let frames = 0, fps = 0, fpsAt = performance.now();
@@ -153,25 +180,34 @@ function frame(now: number) {
   const target = tiltOn && tilt.active ? norm(tilt.up) : { x: 0, y: 0, z: 1 };
   const a = 1 - Math.exp(-dt / 0.3);
   ballUp = norm({ x: ballUp.x + (target.x - ballUp.x) * a, y: ballUp.y + (target.y - ballUp.y) * a, z: ballUp.z + (target.z - ballUp.z) * a });
-  // 小球の座標軸：z が上、x は端末の x を水平面に落としたもの（水平方向の回転は端末についていく）
+  const sensing = tiltOn && tilt.active;
   const zb = ballUp;
-  let xb = { x: 1 - zb.x * zb.x, y: -zb.x * zb.y, z: -zb.x * zb.z };
-  if (Math.hypot(xb.x, xb.y, xb.z) < 1e-3) xb = { x: -zb.y * zb.x, y: 1 - zb.y * zb.y, z: -zb.y * zb.z };
-  xb = norm(xb);
+  let xb: Vec3;
+  let lightTarget: Vec3;
+  const le = P.lightElev * Math.PI / 180;
+  if (sensing) {
+    // 小球の向き：端末の x 軸の方位に、時定数 followTau で遅れて追いつく
+    const devHeading = bearingOf(orthoTo({ x: 1, y: 0, z: 0 }, target));
+    if (ballHeading === null) ballHeading = devHeading;
+    const diff = ((devHeading - ballHeading + 540) % 360) - 180;
+    ballHeading = (ballHeading + diff * (1 - Math.exp(-dt / Math.max(0.05, P.followTau))) + 360) % 360;
+    const hb = ballHeading * Math.PI / 180;
+    xb = orthoTo(tilt.toDevice({ x: Math.sin(hb), y: Math.cos(hb), z: 0 }), zb);
+    // 光：部屋に固定（方位 lightBearing、高さ lightElev）
+    const B = P.lightBearing * Math.PI / 180;
+    lightTarget = norm(tilt.toDevice({ x: Math.sin(B) * Math.cos(le), y: Math.cos(B) * Math.cos(le), z: Math.sin(le) }));
+  } else {
+    // センサーなし：端末を水平に置いた前提。光は画面上の方向（初期値は左上）から
+    ballHeading = null;
+    xb = orthoTo({ x: 1, y: 0, z: 0 }, zb);
+    const la = P.lightAz * Math.PI / 180;
+    lightTarget = { x: Math.cos(le) * Math.cos(la), y: Math.cos(le) * Math.sin(la), z: Math.sin(le) };
+  }
   const yb = cross(zb, xb);
-  // 光：水平を保った座標系で決め（左上・やや高め）、端末座標に直す
-  const la = P.lightAz * Math.PI / 180, le = P.lightElev * Math.PI / 180;
-  const Ll = { x: Math.cos(le) * Math.cos(la), y: Math.cos(le) * Math.sin(la), z: Math.sin(le) };
-  const tz = target;
-  let tx = { x: 1 - tz.x * tz.x, y: -tz.x * tz.y, z: -tz.x * tz.z };
-  if (Math.hypot(tx.x, tx.y, tx.z) < 1e-3) tx = { x: -tz.y * tz.x, y: 1 - tz.y * tz.y, z: -tz.y * tz.z };
-  tx = norm(tx);
-  const ty = cross(tz, tx);
-  const light = norm({
-    x: tx.x * Ll.x + ty.x * Ll.y + tz.x * Ll.z,
-    y: tx.y * Ll.x + ty.y * Ll.y + tz.y * Ll.z,
-    z: tx.z * Ll.x + ty.z * Ll.y + tz.z * Ll.z,
-  });
+  if (!lightSm) lightSm = lightTarget;
+  const al = 1 - Math.exp(-dt / 0.15);
+  lightSm = norm({ x: lightSm.x + (lightTarget.x - lightSm.x) * al, y: lightSm.y + (lightTarget.y - lightSm.y) * al, z: lightSm.z + (lightTarget.z - lightSm.z) * al });
+  const light = lightSm;
 
   const E = eyeFromAngles(S, P.D, 0, 0);   // 画面に正対した固定の視点
   const R = (S.d * S.d / 4 + Math.min(S.h, S.d / 2) ** 2) / (2 * Math.min(S.h, S.d / 2));
@@ -193,7 +229,8 @@ function frame(now: number) {
   if (now - hudAt > 250) {
     hudAt = now;
     const tiltDeg = Math.acos(Math.max(-1, Math.min(1, target.z))) * 180 / Math.PI;
-    hud.textContent = `描画${fps.toFixed(0)}fps ／ 端末の傾き ${tiltDeg.toFixed(1)}°${tiltOn ? "" : "（センサー未使用）"}`;
+    const src = !tiltOn ? "（センサー未使用）" : tilt.compass ? " ／ 方位：地磁気" : " ／ 方位：ジャイロ（相対）";
+    hud.textContent = `描画${fps.toFixed(0)}fps ／ 端末の傾き ${tiltDeg.toFixed(1)}°${src}`;
   }
   requestAnimationFrame(frame);
 }
