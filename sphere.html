@@ -1,0 +1,62 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no">
+<meta name="theme-color" content="#000000">
+<title>dome-lens：液体の球</title>
+</head>
+<body>
+<canvas id="gl"></canvas>
+<div id="ring"></div>
+<button id="show" aria-label="パネルを表示">⚙</button>
+
+<div id="ui">
+  <div class="row">
+    <button id="bCal">位置合わせ</button>
+    <button id="bTilt">傾きセンサーを有効にする</button>
+    <button id="bFull">全画面</button>
+    <button id="bHide">隠す</button>
+    <a class="btn" href="./index.html">表面モードへ</a>
+  </div>
+  <div class="row">
+    <select id="ballPat">
+      <option value="0">小球：経緯線</option>
+      <option value="1">小球：チェッカー</option>
+      <option value="2">小球：無地（陶器）</option>
+    </select>
+    <select id="wallPat">
+      <option value="0">内壁：無地</option>
+      <option value="1">内壁：方眼</option>
+    </select>
+  </div>
+  <div class="hint" id="hint">透明な球が液体で満たされ、中心に小球が浮かんでいる見立てです。画面に正対して見る前提で、顔の追跡は使いません。傾きセンサーを有効にすると、小球は重力に対して水平を保ち、光も部屋に固定されます。</div>
+  <div class="hud" id="hud">—</div>
+
+  <details open>
+    <summary>中身</summary>
+    <label class="s">小球の大きさ<input id="ratio" type="range" min="0.2" max="0.92" step="0.01"><output></output></label>
+    <label class="s">上に来る緯度<input id="lat" type="range" min="-90" max="90" step="1"><output></output></label>
+    <label class="s">自転の速さ<input id="spd" type="range" min="-60" max="60" step="1"><output></output></label>
+    <label class="s">光の方向<input id="lightAz" type="range" min="0" max="355" step="5"><output></output></label>
+    <label class="s">光の高さ<input id="lightElev" type="range" min="10" max="89" step="1"><output></output></label>
+    <label class="s">見る距離<input id="D" type="range" min="100" max="800" step="10"><output></output></label>
+  </details>
+
+  <details>
+    <summary>ドームと素材（表面モードと共通）</summary>
+    <label class="s">直径<input id="d" type="range" min="10" max="80" step="0.5"><output></output></label>
+    <label class="s">高さ<input id="h" type="range" min="1" max="40" step="0.5"><output></output></label>
+    <label class="s">屈折率<input id="n" type="range" min="1.30" max="1.80" step="0.01"><output></output></label>
+    <label class="s">底面の層<select id="n2">
+      <option value="1">空気</option>
+      <option value="1.33">水</option>
+      <option value="1.47">油</option>
+    </select><span></span></label>
+    <label class="s">層の厚み<input id="gap" type="range" min="0" max="2" step="0.05"><output></output></label>
+    <label class="s">カバーガラス<input id="glass" type="range" min="0" max="2" step="0.05"><output></output></label>
+  </details>
+</div>
+<script type="module" src="./src/sphere.ts"></script>
+</body>
+</html>

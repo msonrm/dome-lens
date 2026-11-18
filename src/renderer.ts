@@ -345,7 +345,11 @@ export class Renderer {
   private tex: WebGLTexture;
   hasTex = false;
 
-  constructor(private canvas: HTMLCanvasElement) {
+  /**
+   * sceneFS を渡すと、ドームの中身を描くフラグメントシェーダを差し替えられる
+   * （頂点シェーダの屈折計算はそのまま使う）。extraUniforms はその追加ユニフォーム名
+   */
+  constructor(private canvas: HTMLCanvasElement, sceneFS?: string, extraUniforms: string[] = []) {
     const gl = canvas.getContext("webgl2", { antialias: true });
     if (!gl) throw new Error("WebGL2 が使えません");
     this.gl = gl;
@@ -356,7 +360,7 @@ export class Renderer {
     };
     const prog = gl.createProgram()!;
     gl.attachShader(prog, sh(gl.VERTEX_SHADER, VS));
-    gl.attachShader(prog, sh(gl.FRAGMENT_SHADER, FS));
+    gl.attachShader(prog, sh(gl.FRAGMENT_SHADER, sceneFS ?? FS));
     gl.linkProgram(prog);
     if (!gl.getProgramParameter(prog, gl.LINK_STATUS)) throw new Error(gl.getProgramInfoLog(prog) ?? "link");
     this.prog = prog;
@@ -371,7 +375,7 @@ export class Renderer {
     for (const n of ["uCenter", "uPxPerMm", "uSize", "uLat", "uLon", "uPattern", "uTex", "uHasTex",
       "uR", "uCz", "uZb", "uA", "uAmax", "uN", "uN2", "uGap", "uGlass", "uEye", "uCorr", "uNA", "uNP",
       "uBubble", "uBubbleDir", "uBubbleRad", "uRingScale", "uTime", "uBeamDir", "uBeamLen",
-      "uGaze", "uPupil", "uIrisType", "uLidOpen", "uLids", "uShade", "uLight"]) this.u[n] = gl.getUniformLocation(prog, n);
+      "uGaze", "uPupil", "uIrisType", "uLidOpen", "uLids", "uShade", "uLight", ...extraUniforms]) this.u[n] = gl.getUniformLocation(prog, n);
     this.vao = gl.createVertexArray()!; // 頂点属性なし（gl_VertexID だけで描く）
 
     this.tex = gl.createTexture()!;
@@ -394,7 +398,7 @@ export class Renderer {
     this.canvas.width = Math.round(cssW * dpr); this.canvas.height = Math.round(cssH * dpr);
   }
 
-  draw(f: FrameUniforms) {
+  draw(f: FrameUniforms, extra?: (gl: WebGL2RenderingContext, u: Record<string, WebGLUniformLocation | null>) => void) {
     const gl = this.gl, u = this.u;
     gl.viewport(0, 0, this.canvas.width, this.canvas.height);
     gl.clearColor(0, 0, 0, 1); gl.clear(gl.COLOR_BUFFER_BIT);
@@ -444,6 +448,7 @@ export class Renderer {
     gl.uniform1i(u.uTex, 0);
     gl.activeTexture(gl.TEXTURE0); gl.bindTexture(gl.TEXTURE_2D, this.tex);
     gl.bindVertexArray(this.vao);
+    extra?.(gl, u);
     gl.drawArrays(gl.TRIANGLES, 0, NA * NP * 6);
   }
 }

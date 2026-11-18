@@ -1,0 +1,121 @@
+// 液体の球モードのフラグメントシェーダ
+//
+// 見立て：透明な外殻の球（半径 R）が、ドームと同じ屈折率の液体で満たされている。
+// 中心を共有する不透明な小球（半径 uInnerR）が浮かび、その奥に外殻の下半分の内壁が見える。
+// 画面はちょうど球の中心の高さ（ドームの底面）にあり、下半分は画面の向こうにあるとみなす。
+//
+// 頂点シェーダが求めた「ドーム表面の点 vS」と「屈折後の視線 vT」から、
+// 視線を液体の中へそのまま進め（画面の面は素通り）、小球か内壁に当てて色を決める。
+// 座標はすべて端末の座標系（mm、x 右・y 上・z 手前）。
+
+export const SPHERE_FS = `#version 300 es
+precision highp float;
+in vec3 vDir; in vec3 vS; in vec3 vT;
+uniform float uR, uCz, uZb;
+uniform float uInnerR;
+uniform vec3 uBx, uBy, uBz;          // 小球の座標軸（端末座標）。uBz が重力と逆の「上」
+uniform float uLat, uLon;            // 模様の向き：上に来る緯度、経度（自転）
+uniform int uBallPat;                // 0 経緯線、1 チェッカー、2 無地（陶器）
+uniform int uWallPat;                // 0 無地、1 方眼
+uniform vec3 uLight;                 // 光の来る向き（端末座標、単位ベクトル）
+out vec4 o;
+const float PI = 3.14159265;
+
+float lineMask(float dist, float w){ return 1.0 - smoothstep(w * 0.6, w * 1.6, dist); }
+
+// 球との交差：|o + t d − c| = r の解（近い方 / 遠い方）
+vec2 hitSphere(vec3 ro, vec3 rd, vec3 c, float r){
+  vec3 oc = ro - c;
+  float b = dot(oc, rd), q = dot(oc, oc) - r * r;
+  float disc = b * b - q;
+  if (disc < 0.0) return vec2(-1.0);
+  float s = sqrt(disc);
+  return vec2(-b - s, -b + s);
+}
+
+vec3 ballColor(vec3 n){
+  // 端末座標の法線 → 小球の座標（重力で水平を保つ）→ 地球儀の座標
+  vec3 nb = vec3(dot(n, uBx), dot(n, uBy), dot(n, uBz));
+  float la = uLat, lo = uLon;
+  vec3 U  = vec3(cos(la) * cos(lo), cos(la) * sin(lo), sin(la));
+  vec3 Ea = vec3(-sin(lo), cos(lo), 0.0);
+  vec3 No = vec3(-sin(la) * cos(lo), -sin(la) * sin(lo), cos(la));
+  vec3 g = normalize(nb.x * Ea + nb.y * No + nb.z * U);
+  float lat = asin(clamp(g.z, -1.0, 1.0));
+  float lon = atan(g.y, g.x);
+  float latd = degrees(lat), lond = degrees(lon);
+  float lon2 = degrees(atan(-g.y, -g.x));
+  float wLat = fwidth(latd);
+  float wLon = min(fwidth(lond), fwidth(lon2));
+  float cl = max(cos(lat), 1e-3);
+  if (uBallPat == 0) {
+    vec3 col = vec3(0.92, 0.90, 0.84);
+    float dLat = abs(fract(latd / 15.0 + 0.5) - 0.5) * 15.0;
+    float dLon = abs(fract(lond / 15.0 + 0.5) - 0.5) * 15.0 * cl;
+    col = mix(col, vec3(0.20, 0.30, 0.45), max(lineMask(dLat, wLat), lineMask(dLon, wLon * cl)) * 0.8);
+    col = mix(col, vec3(0.80, 0.15, 0.12), lineMask(abs(latd), wLat * 1.8));
+    col = mix(col, vec3(0.85, 0.60, 0.05), lineMask(abs(lond) * cl, wLon * cl * 1.8));
+    return col;
+  } else if (uBallPat == 1) {
+    float c = mod(floor(latd / 15.0) + floor(lond / 15.0), 2.0);
+    return mix(vec3(0.08), vec3(0.92), c);
+  }
+  return vec3(0.93, 0.91, 0.87);
+}
+
+void main(){
+  vec3 rd = normalize(vT);
+  vec3 ro = vS;
+  vec3 C = vec3(0.0, 0.0, uCz);
+  vec3 V = -rd;
+  vec3 L = normalize(uLight);
+  vec3 col;
+
+  vec2 hb = hitSphere(ro, rd, C, uInnerR);
+  if (hb.x > 0.0) {
+    // 小球：拡散＋鏡面反射（無地は陶器のように強めの照り）
+    vec3 X = ro + rd * hb.x;
+    vec3 n = normalize(X - C);
+    vec3 base = ballColor(n);
+    float lam = max(dot(n, L), 0.0);
+    vec3 H = normalize(L + V);
+    float shin = uBallPat == 2 ? 80.0 : 40.0, ks = uBallPat == 2 ? 0.55 : 0.25;
+    float spec = pow(max(dot(n, H), 0.0), shin) * ks;
+    float rim = pow(1.0 - max(dot(n, V), 0.0), 3.0) * 0.12;   // 縁のわずかな照り返し
+    col = base * (0.16 + 0.84 * lam) + vec3(spec) + vec3(rim);
+  } else {
+    // 外殻の内壁（視線が球から出ていく点）
+    vec2 hs = hitSphere(ro, rd, C, uR);
+    vec3 W = ro + rd * max(hs.y, 0.0);
+    if (W.z > uZb + 0.01) {
+      col = vec3(0.01, 0.012, 0.02);       // 上半分（透明な側）から外へ抜ける視線
+    } else {
+      vec3 n = normalize(C - W);            // 内側向きの法線
+      vec3 wall = vec3(0.80, 0.78, 0.74);
+      if (uWallPat == 1) {
+        // 方眼：画面に投影したときにます目に見えるよう、x・y の座標で線を引く
+        float w = max(fwidth(W.x), fwidth(W.y));
+        // 斜めに見える所では 1mm の線が細かすぎてちらつくので薄くする
+        float g1 = max(lineMask(abs(fract(W.x + 0.5) - 0.5), w), lineMask(abs(fract(W.y + 0.5) - 0.5), w)) * 0.25 * (1.0 - smoothstep(0.12, 0.35, w));
+        float g5 = max(lineMask(abs(fract(W.x / 5.0 + 0.5) - 0.5) * 5.0, w * 1.5), lineMask(abs(fract(W.y / 5.0 + 0.5) - 0.5) * 5.0, w * 1.5)) * 0.6;
+        wall = mix(vec3(0.90, 0.90, 0.86), vec3(0.30, 0.55, 0.52), max(g1, g5));
+      }
+      float lam = max(dot(n, L), 0.0);
+      // 小球の影：内壁の点から光の方へ伸ばした線が小球をかすめる度合い（遠いほどぼかす）
+      float t = dot(C - W, L);
+      float sh = 0.0;
+      if (t > 0.0) {
+        float d = length(W + L * t - C);
+        float soft = 0.25 + 0.07 * t;
+        sh = 1.0 - smoothstep(uInnerR - soft, uInnerR + soft, d);
+      }
+      // 深い所ほど暗く（液体を長く通る・光が届きにくい）
+      float depth = clamp((uZb - W.z) / uR, 0.0, 1.0);
+      col = wall * (0.14 + 0.86 * lam * (1.0 - 0.75 * sh)) * mix(1.0, 0.7, depth);
+    }
+  }
+  // 液体のわずかな色（通った距離に応じて）
+  float path = hb.x > 0.0 ? hb.x : 2.0 * uR;
+  col *= exp(-vec3(0.010, 0.006, 0.004) * path);
+  o = vec4(col, 1.0);
+}`;
