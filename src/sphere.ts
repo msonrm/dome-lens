@@ -5,6 +5,7 @@ import { Renderer } from "./renderer";
 import { SPHERE_FS } from "./sphereScene";
 import { TiltSensor } from "./level";
 import { load, save, type Settings } from "./settings";
+import { ReactionDiffusion, RD_PRESETS } from "./rd";
 
 const $ = <T extends HTMLElement = HTMLElement>(id: string) => document.getElementById(id) as T;
 const hint = $("hint");
@@ -17,8 +18,15 @@ interface PageSettings {
   lat: number; spd: number; lightAz: number; lightElev: number; D: number;
   lightBearing: number;   // 方位が取れるときの光の方位（北から時計回り、度）
   followTau: number;      // 端末を水平に回したとき、小球が追いつくまでの時間（秒）
+  // チューリングパターン
+  rdRes: number; rdSteps: number;
+  rdFA: number; rdKA: number; rdFB: number; rdKB: number;
+  rdVary: number; rdAxisTilt: number; rdBlend: number;
 }
-const PDEF: PageSettings = { ratio: 0.6, ballPat: 0, wallPat: 1, lat: 35, spd: 6, lightAz: 135, lightElev: 55, D: 300, lightBearing: 315, followTau: 3 };
+const PDEF: PageSettings = {
+  ratio: 0.6, ballPat: 0, wallPat: 1, lat: 35, spd: 6, lightAz: 135, lightElev: 55, D: 300, lightBearing: 315, followTau: 3,
+  rdRes: 192, rdSteps: 12, rdFA: 0.029, rdKA: 0.057, rdFB: 0.035, rdKB: 0.065, rdVary: 1, rdAxisTilt: 90, rdBlend: 0.25,
+};
 const PKEY = "domeLens.sphere.v1";
 const P: PageSettings = { ...PDEF };
 try { Object.assign(P, JSON.parse(localStorage.getItem(PKEY) ?? "{}")); } catch { /* 既定値で動く */ }
@@ -27,7 +35,7 @@ const saveAll = () => { save(S); try { localStorage.setItem(PKEY, JSON.stringify
 // ---------- 描画 ----------
 const canvas = $<HTMLCanvasElement>("gl");
 let renderer: Renderer;
-try { renderer = new Renderer(canvas, SPHERE_FS, ["uInnerR", "uBx", "uBy", "uBz", "uBallPat", "uWallPat"]); }
+try { renderer = new Renderer(canvas, SPHERE_FS, ["uInnerR", "uBx", "uBy", "uBz", "uBallPat", "uWallPat", "uField", "uFieldN"]); }
 catch (e) { hint.textContent = "WebGL2 が使えないため表示できません。"; throw e; }
 
 let W = 0, H = 0;
@@ -85,14 +93,37 @@ let ballUp: Vec3 = { x: 0, y: 0, z: 1 };
 
 // ---------- UI ----------
 type SKey = "d" | "h" | "n" | "gap" | "glass";
-type PKey = "ratio" | "lat" | "spd" | "lightAz" | "lightElev" | "D" | "lightBearing" | "followTau";
+type PKey = "ratio" | "lat" | "spd" | "lightAz" | "lightElev" | "D" | "lightBearing" | "followTau"
+  | "rdSteps" | "rdFA" | "rdKA" | "rdFB" | "rdKB" | "rdAxisTilt" | "rdBlend";
 const units: Record<string, string> = {
   d: "mm", h: "mm", n: "", gap: "mm", glass: "mm",
   ratio: "×", lat: "°", spd: "°/s", lightAz: "°", lightElev: "°", D: "mm", lightBearing: "°", followTau: "秒",
+  rdSteps: "/フレーム", rdFA: "", rdKA: "", rdFB: "", rdKB: "", rdAxisTilt: "°", rdBlend: "",
 };
 const sKeys: SKey[] = ["d", "h", "n", "gap", "glass"];
-const pKeys: PKey[] = ["ratio", "lat", "spd", "lightAz", "lightElev", "D", "lightBearing", "followTau"];
-const fmt = (k: string, v: number) => (k === "n" || k === "ratio" ? v.toFixed(2) : String(v)) + units[k];
+const pKeys: PKey[] = ["ratio", "lat", "spd", "lightAz", "lightElev", "D", "lightBearing", "followTau",
+  "rdSteps", "rdFA", "rdKA", "rdFB", "rdKB", "rdAxisTilt", "rdBlend"];
+const fmt = (k: string, v: number) =>
+  (k === "n" || k === "ratio" || k === "rdBlend" ? v.toFixed(2) : k.startsWith("rdF") || k.startsWith("rdK") ? v.toFixed(4) : String(v)) + units[k];
+
+// ---------- チューリングパターン ----------
+let rd: ReactionDiffusion | null = null;
+function ensureRD(): ReactionDiffusion | null {
+  if (rd) return rd;
+  try { rd = new ReactionDiffusion(renderer.context, P.rdRes); }
+  catch (e) { hint.textContent = "チューリングパターンを計算できません：" + (e instanceof Error ? e.message : String(e)); }
+  return rd;
+}
+for (const id of ["rdPresetA", "rdPresetB"]) {
+  const sel = $<HTMLSelectElement>(id);
+  sel.innerHTML = `<option value="-1">プリセットを選ぶ…</option>` + RD_PRESETS.map((p, i) => `<option value="${i}">${p.name}（${p.f} / ${p.k}）</option>`).join("");
+  sel.addEventListener("change", () => {
+    const i = parseInt(sel.value, 10); if (i < 0) return;
+    const pr = RD_PRESETS[i];
+    if (id === "rdPresetA") { P.rdFA = pr.f; P.rdKA = pr.k; } else { P.rdFB = pr.f; P.rdKB = pr.k; }
+    sel.value = "-1"; sync(); saveAll();
+  });
+}
 function toggle(id: string, on: boolean, onText: string, offText: string) {
   const b = $(id); b.classList.toggle("on", on); b.textContent = on ? onText : offText;
 }
@@ -102,6 +133,8 @@ function sync() {
   $<HTMLSelectElement>("n2").value = String(S.n2);
   $<HTMLSelectElement>("ballPat").value = String(P.ballPat);
   $<HTMLSelectElement>("wallPat").value = String(P.wallPat);
+  $<HTMLSelectElement>("rdRes").value = String(P.rdRes);
+  $<HTMLSelectElement>("rdVary").value = String(P.rdVary);
   toggle("bTilt", tiltOn, "傾きセンサー 動作中", "傾きセンサーを有効にする");
 }
 for (const k of sKeys) $<HTMLInputElement>(k).addEventListener("input", e => {
@@ -113,7 +146,16 @@ for (const k of pKeys) $<HTMLInputElement>(k).addEventListener("input", e => {
   P[k] = parseFloat((e.target as HTMLInputElement).value); sync(); saveAll();
 });
 $<HTMLSelectElement>("n2").addEventListener("change", e => { S.n2 = parseFloat((e.target as HTMLSelectElement).value); saveAll(); });
-$<HTMLSelectElement>("ballPat").addEventListener("change", e => { P.ballPat = parseInt((e.target as HTMLSelectElement).value, 10); saveAll(); });
+$<HTMLSelectElement>("ballPat").addEventListener("change", e => {
+  P.ballPat = parseInt((e.target as HTMLSelectElement).value, 10); saveAll();
+  if (P.ballPat === 3) ($("rdPanel") as HTMLDetailsElement).open = true;
+});
+$<HTMLSelectElement>("rdRes").addEventListener("change", e => {
+  P.rdRes = parseInt((e.target as HTMLSelectElement).value, 10); saveAll();
+  rd?.resize(P.rdRes);
+});
+$<HTMLSelectElement>("rdVary").addEventListener("change", e => { P.rdVary = parseInt((e.target as HTMLSelectElement).value, 10); saveAll(); });
+$("bRdReset").onclick = () => { ensureRD()?.seed(); };
 $<HTMLSelectElement>("wallPat").addEventListener("change", e => { P.wallPat = parseInt((e.target as HTMLSelectElement).value, 10); saveAll(); });
 $("bCal").onclick = () => { calMode = !calMode; $("bCal").classList.toggle("on", calMode); placeRing(); };
 $("bTilt").onclick = async () => {
@@ -209,6 +251,20 @@ function frame(now: number) {
   lightSm = norm({ x: lightSm.x + (lightTarget.x - lightSm.x) * al, y: lightSm.y + (lightTarget.y - lightSm.y) * al, z: lightSm.z + (lightTarget.z - lightSm.z) * al });
   const light = lightSm;
 
+  // チューリングパターンを進める（小球に固定した座標で計算）
+  let field: ReactionDiffusion | null = null;
+  if (P.ballPat === 3) {
+    field = ensureRD();
+    if (field && P.rdSteps > 0) {
+      const t = P.rdAxisTilt * Math.PI / 180;
+      field.step(Math.round(P.rdSteps), {
+        a: [P.rdFA, P.rdKA], b: [P.rdFB, P.rdKB],
+        axis: [Math.sin(t), 0, Math.cos(t)],
+        blend: P.rdVary ? P.rdBlend : 0,
+      });
+    }
+  }
+
   const E = eyeFromAngles(S, P.D, 0, 0);   // 画面に正対した固定の視点
   const R = (S.d * S.d / 4 + Math.min(S.h, S.d / 2) ** 2) / (2 * Math.min(S.h, S.d / 2));
   renderer.draw({
@@ -224,6 +280,13 @@ function frame(now: number) {
     gl.uniform3f(u.uBz, zb.x, zb.y, zb.z);
     gl.uniform1i(u.uBallPat, P.ballPat);
     gl.uniform1i(u.uWallPat, P.wallPat);
+    if (field) {
+      gl.activeTexture(gl.TEXTURE1);
+      gl.bindTexture(gl.TEXTURE_2D, field.texture);
+      gl.uniform1i(u.uField, 1);
+      gl.uniform1f(u.uFieldN, field.n);
+      gl.activeTexture(gl.TEXTURE0);
+    }
   });
 
   if (now - hudAt > 250) {

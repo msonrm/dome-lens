@@ -386,6 +386,8 @@ export class Renderer {
     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
   }
 
+  get context() { return this.gl; }
+
   setImage(src: TexImageSource) {
     const gl = this.gl;
     gl.bindTexture(gl.TEXTURE_2D, this.tex);

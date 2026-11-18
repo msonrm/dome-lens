@@ -8,14 +8,18 @@
 // 視線を液体の中へそのまま進め（画面の面は素通り）、小球か内壁に当てて色を決める。
 // 座標はすべて端末の座標系（mm、x 右・y 上・z 手前）。
 
+import { CUBE_GLSL } from "./rd";
+
 export const SPHERE_FS = `#version 300 es
 precision highp float;
+${CUBE_GLSL}
+uniform sampler2D uField; uniform float uFieldN;   // 反応拡散の場（キューブスフィア）
 in vec3 vDir; in vec3 vS; in vec3 vT;
 uniform float uR, uCz, uZb;
 uniform float uInnerR;
 uniform vec3 uBx, uBy, uBz;          // 小球の座標軸（端末座標）。uBz が重力と逆の「上」
 uniform float uLat, uLon;            // 模様の向き：上に来る緯度、経度（自転）
-uniform int uBallPat;                // 0 経緯線、1 チェッカー、2 無地（陶器）
+uniform int uBallPat;                // 0 経緯線、1 チェッカー、2 無地（陶器）、3 チューリングパターン
 uniform int uWallPat;                // 0 無地、1 方眼
 uniform vec3 uLight;                 // 光の来る向き（端末座標、単位ベクトル）
 out vec4 o;
@@ -36,6 +40,14 @@ vec2 hitSphere(vec3 ro, vec3 rd, vec3 c, float r){
 vec3 ballColor(vec3 n){
   // 端末座標の法線 → 小球の座標（重力で水平を保つ）→ 地球儀の座標
   vec3 nb = vec3(dot(n, uBx), dot(n, uBy), dot(n, uBz));
+  if (uBallPat == 3) {
+    // 反応拡散：小球に固定した座標（自転ぶん回す）で場を読む。V が濃い所を黒に
+    float c = cos(-uLon), s = sin(-uLon);
+    vec3 q = vec3(c * nb.x - s * nb.y, s * nb.x + c * nb.y, nb.z);
+    float v = texture(uField, dirToAtlas(q, uFieldN)).g;
+    float w = fwidth(v);
+    return mix(vec3(0.93, 0.91, 0.87), vec3(0.05), smoothstep(0.22 - w, 0.22 + w, v));
+  }
   float la = uLat, lo = uLon;
   vec3 U  = vec3(cos(la) * cos(lo), cos(la) * sin(lo), sin(la));
   vec3 Ea = vec3(-sin(lo), cos(lo), 0.0);
@@ -79,7 +91,8 @@ void main(){
     vec3 base = ballColor(n);
     float lam = max(dot(n, L), 0.0);
     vec3 H = normalize(L + V);
-    float shin = uBallPat == 2 ? 80.0 : 40.0, ks = uBallPat == 2 ? 0.55 : 0.25;
+    bool glaze = uBallPat >= 2;   // 無地と反応拡散は陶器の釉薬のような強い照り
+    float shin = glaze ? 80.0 : 40.0, ks = glaze ? 0.55 : 0.25;
     float spec = pow(max(dot(n, H), 0.0), shin) * ks;
     float rim = pow(1.0 - max(dot(n, V), 0.0), 3.0) * 0.12;   // 縁のわずかな照り返し
     col = base * (0.16 + 0.84 * lam) + vec3(spec) + vec3(rim);

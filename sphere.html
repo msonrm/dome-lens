@@ -24,6 +24,7 @@
       <option value="0">小球：経緯線</option>
       <option value="1">小球：チェッカー</option>
       <option value="2">小球：無地（陶器）</option>
+      <option value="3">小球：チューリングパターン</option>
     </select>
     <select id="wallPat">
       <option value="0">内壁：無地</option>
@@ -45,6 +46,35 @@
     <label class="s">小球の追従<input id="followTau" type="range" min="0.2" max="10" step="0.1"><output></output></label>
     <div class="hint">センサー使用中は、光は部屋に固定されます（光の方位＝北から時計回り）。部屋の照明に合わせるには、画面の左上が照明の方を向くように持ってボタンを押します。光の方向＝画面上の向き（右が 0°、左上が 135°）で、センサー未使用時とボタンの基準に使います。小球の追従＝スマホを水平に回したとき、小球が追いつくまでの時間。</div>
     <label class="s">見る距離<input id="D" type="range" min="100" max="800" step="10"><output></output></label>
+  </details>
+
+  <details id="rdPanel">
+    <summary>チューリングパターン</summary>
+    <div class="row">
+      <button id="bRdReset">種をまき直す</button>
+      <select id="rdRes">
+        <option value="128">模様：大きめ</option>
+        <option value="192">模様：普通</option>
+        <option value="256">模様：細かい</option>
+      </select>
+    </div>
+    <label class="s">進む速さ<input id="rdSteps" type="range" min="0" max="40" step="1"><output></output></label>
+    <div class="row"><span class="lbl">模様 A</span><select id="rdPresetA"></select></div>
+    <label class="s">A 供給率<input id="rdFA" type="range" min="0.005" max="0.09" step="0.0005"><output></output></label>
+    <label class="s">A 除去率<input id="rdKA" type="range" min="0.03" max="0.075" step="0.0005"><output></output></label>
+    <div class="row">
+      <span class="lbl">場所ごとの変化</span>
+      <select id="rdVary">
+        <option value="0">なし（全体が A）</option>
+        <option value="1">あり（A と B を球の上で分ける）</option>
+      </select>
+    </div>
+    <div class="row"><span class="lbl">模様 B</span><select id="rdPresetB"></select></div>
+    <label class="s">B 供給率<input id="rdFB" type="range" min="0.005" max="0.09" step="0.0005"><output></output></label>
+    <label class="s">B 除去率<input id="rdKB" type="range" min="0.03" max="0.075" step="0.0005"><output></output></label>
+    <label class="s">境目の向き<input id="rdAxisTilt" type="range" min="0" max="90" step="1"><output></output></label>
+    <label class="s">移り変わりの幅<input id="rdBlend" type="range" min="0.02" max="1" step="0.01"><output></output></label>
+    <div class="hint">A は球の「軸の＋側」、B は反対側に育ちます。境目の向き 0° は北が A・南が B（上から見ると A ばかり）、90° は境目が真上を通り、上から A と B の両方が見えます。移り変わりの幅を広げると、A から B へ連続的に変化する帯になります。値を変えると、今ある模様がその場で育ち直します。</div>
   </details>
 
   <details>
