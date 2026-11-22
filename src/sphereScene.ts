@@ -30,6 +30,7 @@ uniform float uCamF;                 // 焦点距離（ピクセル）
 uniform vec2 uCamSize;               // 映像の大きさ（ピクセル）
 uniform float uCamFlip;              // 映像の左右の向き（表面モードの「左右反転」と同じ）
 uniform float uFaceZ;                // 見る人の顔がある高さ（mm）
+uniform float uSpread;               // 映り込みの広がり（1 で物理どおり。大きいほどカメラ映像が球の縁まで広がる）
 out vec4 o;
 const float PI = 3.14159265;
 
@@ -185,6 +186,16 @@ void main(){
     if (uBallPat == 4) {
       // 鏡面球：反射方向の景色（内壁かインカメラの映像）と、照明の鋭い光点
       vec3 r = reflect(rd, n);
+      // 映り込みの広がり：見る人の方向からの角度を uSpread 分の1に縮める。
+      // インカメラは正面の狭い範囲しか写さないので、物理どおり（1）だと映像は球の中央だけになる。
+      // 縮めると、狭い映像が球の縁まで広がり、エッシャーの自画像のように部屋全体が映っている見え方になる
+      vec3 ax = normalize(uEye - C);
+      float th = acos(clamp(dot(r, ax), -1.0, 1.0));
+      if (uSpread > 1.0 && th > 1e-4) {
+        vec3 pr = normalize(r - ax * cos(th));
+        float th2 = th / uSpread;
+        r = ax * cos(th2) + pr * sin(th2);
+      }
       vec3 env = mirrorEnv(X, r, L);
       float fres = 0.82 + 0.18 * pow(1.0 - max(dot(n, V), 0.0), 5.0);
       float sun = pow(max(dot(r, L), 0.0), 1500.0) * 1.2;   // 実際の照明も映像に映るので控えめに
