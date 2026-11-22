@@ -32,13 +32,14 @@ interface PageSettings {
   pads: Pad[];            // 金属線につながるパッドの位置（左の線から順）
   wireInvert: boolean;    // なぞった向きと回る向きを反転
   wireGain: number;       // 回す強さ
+  sensorRot: string;      // センサーの向きの補正（"auto" か角度）
 }
 const PDEF: PageSettings = {
   ratio: 0.6, ballPat: 0, wallPat: 1, lat: 35, spd: 6, lightAz: 135, lightElev: 55, D: 300, lightBearing: 315, followTau: 3,
   rdRes: 192, rdSteps: 12, rdFA: 0.029, rdKA: 0.057, rdFB: 0.035, rdKB: 0.065, rdVary: 1, rdAxisTilt: 90, rdBlend: 0.25,
   spread: 2.0, camSat: 1.0,
   skyMode: "now", skyTime: "", belowDark: 0.75,
-  pads: [], wireInvert: false, wireGain: 1,
+  pads: [], wireInvert: false, wireGain: 1, sensorRot: "auto",
 };
 const PKEY = "domeLens.sphere.v1";
 const P: PageSettings = { ...PDEF };
@@ -163,6 +164,7 @@ $("bWireInv").onclick = () => { P.wireInvert = !P.wireInvert; sync(); saveAll();
 
 // ---------- 傾きセンサー ----------
 const tilt = new TiltSensor();
+tilt.rotation = P.sensorRot === "auto" ? "auto" : parseFloat(P.sensorRot);
 let tiltOn = false;
 // 小球の「上」：ゆっくり水平に戻る（重力の向きに遅れて追従）
 let ballUp: Vec3 = { x: 0, y: 0, z: 1 };
@@ -301,6 +303,7 @@ function sync() {
   $<HTMLSelectElement>("rdPresetB").value = String(presetIndex(P.rdFB, P.rdKB));
   toggle("bTilt", tiltOn, "傾きセンサー 動作中", "傾きセンサーを有効にする");
   toggle("bFlip", S.flipX, "左右反転 ON", "左右反転 OFF");
+  $<HTMLSelectElement>("sensorRot").value = P.sensorRot;
   toggle("bTouchDiag", touchDiag, "タッチ確認 ON", "タッチ確認 OFF");
   toggle("bWireReg", wires.registering, "登録を終える", "線を登録");
   toggle("bWireInv", P.wireInvert, "向きを反転 ON", "向きを反転 OFF");
@@ -339,6 +342,11 @@ $("bRdReset").onclick = () => { ensureRD()?.seed(); };
 $<HTMLSelectElement>("wallPat").addEventListener("change", e => { P.wallPat = parseInt((e.target as HTMLSelectElement).value, 10); saveAll(); });
 $<HTMLInputElement>("camFov").addEventListener("input", e => {
   S.fxRatio = fovToRatio(parseFloat((e.target as HTMLInputElement).value)); sync(); saveAll();
+});
+$<HTMLSelectElement>("sensorRot").addEventListener("change", e => {
+  P.sensorRot = (e.target as HTMLSelectElement).value;
+  tilt.rotation = P.sensorRot === "auto" ? "auto" : parseFloat(P.sensorRot);
+  saveAll();
 });
 $("bFlip").onclick = () => { S.flipX = !S.flipX; sync(); saveAll(); };
 $("bCal").onclick = () => { calMode = !calMode; $("bCal").classList.toggle("on", calMode); placeRing(); };

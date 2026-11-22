@@ -9,7 +9,17 @@ export interface Tilt { x: number; y: number; }   // 上向きベクトルの水
 
 type V3 = { x: number; y: number; z: number };
 
+/** iPhone・iPad（iPadOS は Mac として名乗るので、タッチ対応の Mac も含める） */
+export const IS_IOS = /iPad|iPhone|iPod/.test(navigator.userAgent) ||
+  (navigator.platform === "MacIntel" && navigator.maxTouchPoints > 1);
+
 export class TiltSensor {
+  /**
+   * 画面の向きの補正。"auto" は、Android では画面の回転ぶん回し、
+   * iOS / iPadOS では回さない（センサー値がすでに今の画面の向きを基準にしているため）。
+   * 数値（度）を入れると、その角度ぶん回す（機種ごとの手動調整用）
+   */
+  rotation: "auto" | number = "auto";
   up: V3 = { x: 0, y: 0, z: 1 };
   active = false;
   /** 方位が取れているか（北を基準にした alpha） */
@@ -42,8 +52,11 @@ export class TiltSensor {
     // 画面が回転している場合（横向き表示）は、画面の座標系に合わせて回す
     // 角度は端末を反時計回りに回した量（90 なら上端が左を向いた横向き）。
     // そのとき画面の右＝端末の下（−y）、画面の上＝端末の右（＋x）なので、+角度ぶん回す
-    const legacy = (window as unknown as { orientation?: number }).orientation;
-    const deg = screen.orientation?.angle ?? (typeof legacy === "number" ? legacy : 0);
+    let deg: number;
+    if (this.rotation === "auto") {
+      const legacy = (window as unknown as { orientation?: number }).orientation;
+      deg = IS_IOS ? 0 : (screen.orientation?.angle ?? (typeof legacy === "number" ? legacy : 0));
+    } else deg = this.rotation;
     const ang = deg * Math.PI / 180;
     if (ang) { const c = Math.cos(ang), s = Math.sin(ang); [x, y] = [c * x - s * y, s * x + c * y]; }
     return { x, y, z };
