@@ -31,6 +31,7 @@ uniform vec2 uCamSize;               // 映像の大きさ（ピクセル）
 uniform float uCamFlip;              // 映像の左右の向き（表面モードの「左右反転」と同じ）
 uniform float uFaceZ;                // 見る人の顔がある高さ（mm）
 uniform float uSpread;               // 映り込みの広がり（1 で物理どおり。大きいほどカメラ映像が球の縁まで広がる）
+uniform float uCamSat;               // 映り込む映像の彩度（0 で白黒、1 でそのまま）
 out vec4 o;
 const float PI = 3.14159265;
 
@@ -163,6 +164,7 @@ vec3 mirrorEnv(vec3 X, vec3 r, vec3 L){
     float ov = length(over);
     float lod = clamp(ov * 40.0, 0.0, 7.0);
     vec3 cam = textureLod(uCam, uv, lod).rgb;
+    cam = mix(vec3(dot(cam, vec3(0.299, 0.587, 0.114))), cam, uCamSat);
     env = cam * mix(1.0, 0.55, smoothstep(0.0, 1.5, ov));
   }
   return env;

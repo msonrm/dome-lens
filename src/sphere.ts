@@ -23,11 +23,12 @@ interface PageSettings {
   rdFA: number; rdKA: number; rdFB: number; rdKB: number;
   rdVary: number; rdAxisTilt: number; rdBlend: number;
   spread: number;         // 鏡面球の映り込みの広がり
+  camSat: number;         // 映り込む映像の彩度
 }
 const PDEF: PageSettings = {
   ratio: 0.6, ballPat: 0, wallPat: 1, lat: 35, spd: 6, lightAz: 135, lightElev: 55, D: 300, lightBearing: 315, followTau: 3,
   rdRes: 192, rdSteps: 12, rdFA: 0.029, rdKA: 0.057, rdFB: 0.035, rdKB: 0.065, rdVary: 1, rdAxisTilt: 90, rdBlend: 0.25,
-  spread: 3.2,
+  spread: 2.0, camSat: 1.0,
 };
 const PKEY = "domeLens.sphere.v1";
 const P: PageSettings = { ...PDEF };
@@ -38,7 +39,7 @@ const saveAll = () => { save(S); try { localStorage.setItem(PKEY, JSON.stringify
 const canvas = $<HTMLCanvasElement>("gl");
 let renderer: Renderer;
 try { renderer = new Renderer(canvas, SPHERE_FS, ["uInnerR", "uBx", "uBy", "uBz", "uBallPat", "uWallPat", "uField", "uFieldN",
-    "uCam", "uCamOn", "uCamPos", "uCamF", "uCamSize", "uCamFlip", "uFaceZ", "uSpread"]); }
+    "uCam", "uCamOn", "uCamPos", "uCamF", "uCamSize", "uCamFlip", "uFaceZ", "uSpread", "uCamSat"]); }
 catch (e) { hint.textContent = "WebGL2 が使えないため表示できません。"; throw e; }
 
 let W = 0, H = 0;
@@ -97,17 +98,17 @@ let ballUp: Vec3 = { x: 0, y: 0, z: 1 };
 // ---------- UI ----------
 type SKey = "d" | "h" | "n" | "gap" | "glass";
 type PKey = "ratio" | "lat" | "spd" | "lightAz" | "lightElev" | "D" | "lightBearing" | "followTau"
-  | "rdSteps" | "rdFA" | "rdKA" | "rdFB" | "rdKB" | "rdAxisTilt" | "rdBlend" | "spread";
+  | "rdSteps" | "rdFA" | "rdKA" | "rdFB" | "rdKB" | "rdAxisTilt" | "rdBlend" | "spread" | "camSat";
 const units: Record<string, string> = {
   d: "mm", h: "mm", n: "", gap: "mm", glass: "mm",
   ratio: "×", lat: "°", spd: "°/s", lightAz: "°", lightElev: "°", D: "mm", lightBearing: "°", followTau: "秒",
-  rdSteps: "/フレーム", rdFA: "", rdKA: "", rdFB: "", rdKB: "", rdAxisTilt: "°", rdBlend: "", spread: "×",
+  rdSteps: "/フレーム", rdFA: "", rdKA: "", rdFB: "", rdKB: "", rdAxisTilt: "°", rdBlend: "", spread: "×", camSat: "",
 };
 const sKeys: SKey[] = ["d", "h", "n", "gap", "glass"];
 const pKeys: PKey[] = ["ratio", "lat", "spd", "lightAz", "lightElev", "D", "lightBearing", "followTau",
-  "rdSteps", "rdFA", "rdKA", "rdFB", "rdKB", "rdAxisTilt", "rdBlend", "spread"];
+  "rdSteps", "rdFA", "rdKA", "rdFB", "rdKB", "rdAxisTilt", "rdBlend", "spread", "camSat"];
 const fmt = (k: string, v: number) =>
-  (k === "n" || k === "ratio" || k === "rdBlend" || k === "spread" ? v.toFixed(2) : k.startsWith("rdF") || k.startsWith("rdK") ? v.toFixed(4) : String(v)) + units[k];
+  (k === "n" || k === "ratio" || k === "rdBlend" || k === "spread" || k === "camSat" ? v.toFixed(2) : k.startsWith("rdF") || k.startsWith("rdK") ? v.toFixed(4) : String(v)) + units[k];
 
 // ---------- 鏡面球に映すインカメラの映像 ----------
 const camVideo = document.createElement("video");
@@ -351,6 +352,7 @@ function frame(now: number) {
       gl.uniform1f(u.uCamFlip, S.flipX ? 1 : -1);
       gl.uniform1f(u.uFaceZ, E.z);
       gl.uniform1f(u.uSpread, P.spread);
+      gl.uniform1f(u.uCamSat, P.camSat);
     }
     if (field) {
       gl.activeTexture(gl.TEXTURE1);
