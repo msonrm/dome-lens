@@ -25,6 +25,7 @@ uniform vec3 uBodyDir[7]; uniform vec3 uBodyCol[7]; uniform float uBodySize[7];
 uniform vec3 uAspA[21]; uniform vec3 uAspB[21]; uniform vec4 uAspC[21]; uniform int uAspN;
 uniform vec3 uEc0, uEc90, uEcN, uNcp;
 uniform float uShadowK;              // 小球が内壁に落とす影の濃さ
+uniform float uBelowDark;            // 天球の地平線より下を暗くする度合い（0〜1、1 で不透明に近い）
 uniform int uWallPat;                // 0 無地、1 方眼、2 経線（上下端が極）、3 縦横の格子（上下端・左右端が極の経線）
 uniform vec3 uLight;                 // 光の来る向き（端末座標、単位ベクトル）
 uniform vec3 uEye;                   // 視点（頂点シェーダと共通）
@@ -195,9 +196,7 @@ float segDist2(vec3 p0, vec3 d0, float l0, vec3 p1, vec3 d1, float l1){
 // 天球の表面に描く線（地平線と東西南北、黄道の帯と十二宮の区切り、天の赤道と天の北極）。rgb と不透明度
 vec4 skyMarks(vec3 e){
   vec4 m = vec4(0.0);
-  // 地平線
-  float wz = fwidth(e.z);
-  float hz = lineMask(abs(e.z), wz * 1.2);
+  // 地平線の東西南北の目盛り（円周の線は描かない）
   float az = atan(e.x, e.y);                            // 北から東回り
   float wa = fwidth(az) + 1e-4;
   float card = 0.0, north = 0.0;
@@ -207,7 +206,7 @@ vec4 skyMarks(vec3 e){
     float tick = lineMask(d, wa * 1.5) * (1.0 - smoothstep(0.0, 0.12, abs(e.z)));
     if (k == 0) north = tick; else card = max(card, tick);
   }
-  m = mix(m, vec4(0.75, 0.95, 0.80, 0.85), max(hz, card));
+  m = mix(m, vec4(0.75, 0.95, 0.80, 0.85), card);
   m = mix(m, vec4(1.0, 0.25, 0.2, 1.0), north);
   // 黄道の帯（黄緯 ±8°）と中心線、30° ごとの区切り（春分点は強め）
   float beta = asin(clamp(dot(e, uEcN), -1.0, 1.0));
@@ -224,8 +223,6 @@ vec4 skyMarks(vec3 e){
   // 天の赤道と天の北極
   float dq = asin(clamp(dot(e, uNcp), -1.0, 1.0));
   m = mix(m, vec4(0.45, 0.65, 1.0, 0.6), lineMask(abs(dq), fwidth(dq) * 1.1));
-  float dp = acos(clamp(dot(e, uNcp), -1.0, 1.0));
-  m = mix(m, vec4(0.6, 0.8, 1.0, 0.9), 1.0 - smoothstep(0.035, 0.05, dp));
   return m;
 }
 
@@ -248,7 +245,7 @@ vec3 skyRender(vec3 ro, vec3 rd, vec3 L, vec3 V){
       vec3 nn = normalize(ro + rd * h.x - P);
       float lam = max(dot(nn, L), 0.0);
       // 地平線より下の天体は少し暗く
-      float below = uBodyDir[i].z < 0.0 ? 0.6 : 1.0;
+      float below = uBodyDir[i].z < 0.0 ? mix(0.75, 0.4, uBelowDark) : 1.0;
       vec3 c = uBodyCol[i] * (0.35 + 0.75 * lam) * below;
       if (i == 0) c = uBodyCol[i] * 1.25;                 // 太陽は自ら光る
       bodyCol = c + pow(max(dot(nn, normalize(L + V)), 0.0), 60.0) * 0.4;
@@ -260,7 +257,10 @@ vec3 skyRender(vec3 ro, vec3 rd, vec3 L, vec3 V){
   vec3 eB = toENU(normalize(ro + rd * hb.y - C));
   vec4 mb = skyMarks(eB);
   col = col * 0.78 + vec3(0.015, 0.025, 0.05);
-  col = mix(col, mb.rgb, mb.a * 0.45);
+  // 地平線より下の面は暗く（不透明寄りに）して、地面の下であることを示す
+  float below = smoothstep(0.02, -0.02, eB.z);
+  col = mix(col, vec3(0.025, 0.03, 0.035), below * uBelowDark);
+  col = mix(col, mb.rgb, mb.a * 0.45 * (1.0 - 0.6 * below * uBelowDark));
   // 奥側の天体
   if (tBody < 1e8 && tBody > tMid) col = bodyCol;
   // 内部：地平面、地軸、観測者、アスペクトの線（加算で光らせる）

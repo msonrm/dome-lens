@@ -27,12 +27,13 @@ interface PageSettings {
   camSat: number;         // 映り込む映像の彩度
   skyMode: "now" | "set"; // 天球：現在時刻か指定日時か
   skyTime: string;        // 指定日時（日本時間、datetime-local の書式）
+  belowDark: number;      // 地平線より下を暗くする度合い
 }
 const PDEF: PageSettings = {
   ratio: 0.6, ballPat: 0, wallPat: 1, lat: 35, spd: 6, lightAz: 135, lightElev: 55, D: 300, lightBearing: 315, followTau: 3,
   rdRes: 192, rdSteps: 12, rdFA: 0.029, rdKA: 0.057, rdFB: 0.035, rdKB: 0.065, rdVary: 1, rdAxisTilt: 90, rdBlend: 0.25,
   spread: 2.0, camSat: 1.0,
-  skyMode: "now", skyTime: "",
+  skyMode: "now", skyTime: "", belowDark: 0.75,
 };
 const PKEY = "domeLens.sphere.v1";
 const P: PageSettings = { ...PDEF };
@@ -44,7 +45,7 @@ const canvas = $<HTMLCanvasElement>("gl");
 let renderer: Renderer;
 try { renderer = new Renderer(canvas, SPHERE_FS, ["uInnerR", "uBx", "uBy", "uBz", "uBallPat", "uWallPat", "uField", "uFieldN",
     "uCam", "uCamOn", "uCamPos", "uCamF", "uCamSize", "uCamFlip", "uFaceZ", "uSpread", "uCamSat",
-    "uBodyDir", "uBodyCol", "uBodySize", "uAspA", "uAspB", "uAspC", "uAspN", "uEc0", "uEc90", "uEcN", "uNcp", "uShadowK"]); }
+    "uBodyDir", "uBodyCol", "uBodySize", "uAspA", "uAspB", "uAspC", "uAspN", "uEc0", "uEc90", "uEcN", "uNcp", "uShadowK", "uBelowDark"]); }
 catch (e) { hint.textContent = "WebGL2 が使えないため表示できません。"; throw e; }
 
 let W = 0, H = 0;
@@ -103,17 +104,17 @@ let ballUp: Vec3 = { x: 0, y: 0, z: 1 };
 // ---------- UI ----------
 type SKey = "d" | "h" | "n" | "gap" | "glass";
 type PKey = "ratio" | "lat" | "spd" | "lightAz" | "lightElev" | "D" | "lightBearing" | "followTau"
-  | "rdSteps" | "rdFA" | "rdKA" | "rdFB" | "rdKB" | "rdAxisTilt" | "rdBlend" | "spread" | "camSat";
+  | "rdSteps" | "rdFA" | "rdKA" | "rdFB" | "rdKB" | "rdAxisTilt" | "rdBlend" | "spread" | "camSat" | "belowDark";
 const units: Record<string, string> = {
   d: "mm", h: "mm", n: "", gap: "mm", glass: "mm",
   ratio: "×", lat: "°", spd: "°/s", lightAz: "°", lightElev: "°", D: "mm", lightBearing: "°", followTau: "秒",
-  rdSteps: "/フレーム", rdFA: "", rdKA: "", rdFB: "", rdKB: "", rdAxisTilt: "°", rdBlend: "", spread: "×", camSat: "",
+  rdSteps: "/フレーム", rdFA: "", rdKA: "", rdFB: "", rdKB: "", rdAxisTilt: "°", rdBlend: "", spread: "×", camSat: "", belowDark: "",
 };
 const sKeys: SKey[] = ["d", "h", "n", "gap", "glass"];
 const pKeys: PKey[] = ["ratio", "lat", "spd", "lightAz", "lightElev", "D", "lightBearing", "followTau",
-  "rdSteps", "rdFA", "rdKA", "rdFB", "rdKB", "rdAxisTilt", "rdBlend", "spread", "camSat"];
+  "rdSteps", "rdFA", "rdKA", "rdFB", "rdKB", "rdAxisTilt", "rdBlend", "spread", "camSat", "belowDark"];
 const fmt = (k: string, v: number) =>
-  (k === "n" || k === "ratio" || k === "rdBlend" || k === "spread" || k === "camSat" ? v.toFixed(2) : k.startsWith("rdF") || k.startsWith("rdK") ? v.toFixed(4) : String(v)) + units[k];
+  (k === "n" || k === "ratio" || k === "rdBlend" || k === "spread" || k === "camSat" || k === "belowDark" ? v.toFixed(2) : k.startsWith("rdF") || k.startsWith("rdK") ? v.toFixed(4) : String(v)) + units[k];
 
 // ---------- 鏡面球に映すインカメラの映像 ----------
 const camVideo = document.createElement("video");
@@ -403,6 +404,7 @@ function frame(now: number) {
       while (cols.length < 21) cols.push([0, 0, 0, 0]);
       gl.uniform4fv(u.uAspC, new Float32Array(cols.flat()));
       gl.uniform1i(u.uAspN, asp.length);
+      gl.uniform1f(u.uBelowDark, P.belowDark);
       gl.uniform3fv(u.uEc0, sky.ec0); gl.uniform3fv(u.uEc90, sky.ec90);
       gl.uniform3fv(u.uEcN, sky.ecN); gl.uniform3fv(u.uNcp, sky.ncp);
     }
