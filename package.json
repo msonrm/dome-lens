@@ -13,7 +13,8 @@
     "vite": "^8.3.8"
   },
   "dependencies": {
-    "@mediapipe/tasks-vision": "^1.2.3"
+    "@mediapipe/tasks-vision": "^1.2.3",
+    "astronomy-engine": "^2.1.19"
   },
   "private": true,
   "type": "module"

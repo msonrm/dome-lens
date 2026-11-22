@@ -6,6 +6,7 @@ import { SPHERE_FS } from "./sphereScene";
 import { TiltSensor } from "./level";
 import { load, save, type Settings } from "./settings";
 import { ReactionDiffusion, RD_PRESETS } from "./rd";
+import { computeSky, signText, ASPECTS, type Sky } from "./sky";
 
 const $ = <T extends HTMLElement = HTMLElement>(id: string) => document.getElementById(id) as T;
 const hint = $("hint");
@@ -24,11 +25,14 @@ interface PageSettings {
   rdVary: number; rdAxisTilt: number; rdBlend: number;
   spread: number;         // 鏡面球の映り込みの広がり
   camSat: number;         // 映り込む映像の彩度
+  skyMode: "now" | "set"; // 天球：現在時刻か指定日時か
+  skyTime: string;        // 指定日時（日本時間、datetime-local の書式）
 }
 const PDEF: PageSettings = {
   ratio: 0.6, ballPat: 0, wallPat: 1, lat: 35, spd: 6, lightAz: 135, lightElev: 55, D: 300, lightBearing: 315, followTau: 3,
   rdRes: 192, rdSteps: 12, rdFA: 0.029, rdKA: 0.057, rdFB: 0.035, rdKB: 0.065, rdVary: 1, rdAxisTilt: 90, rdBlend: 0.25,
   spread: 2.0, camSat: 1.0,
+  skyMode: "now", skyTime: "",
 };
 const PKEY = "domeLens.sphere.v1";
 const P: PageSettings = { ...PDEF };
@@ -39,7 +43,8 @@ const saveAll = () => { save(S); try { localStorage.setItem(PKEY, JSON.stringify
 const canvas = $<HTMLCanvasElement>("gl");
 let renderer: Renderer;
 try { renderer = new Renderer(canvas, SPHERE_FS, ["uInnerR", "uBx", "uBy", "uBz", "uBallPat", "uWallPat", "uField", "uFieldN",
-    "uCam", "uCamOn", "uCamPos", "uCamF", "uCamSize", "uCamFlip", "uFaceZ", "uSpread", "uCamSat"]); }
+    "uCam", "uCamOn", "uCamPos", "uCamF", "uCamSize", "uCamFlip", "uFaceZ", "uSpread", "uCamSat",
+    "uBodyDir", "uBodyCol", "uBodySize", "uAspA", "uAspB", "uAspC", "uAspN", "uEc0", "uEc90", "uEcN", "uNcp", "uShadowK"]); }
 catch (e) { hint.textContent = "WebGL2 が使えないため表示できません。"; throw e; }
 
 let W = 0, H = 0;
@@ -153,6 +158,38 @@ function updateCamTexture(gl: WebGL2RenderingContext): boolean {
   return true;
 }
 
+// ---------- 天球 ----------
+let sky: Sky | null = null;
+let skyAt = 0;
+let skyDirty = true;
+/** 日本時間の "YYYY-MM-DDTHH:MM" ⇔ Date */
+const jstToDate = (v: string) => new Date(v + ":00+09:00");
+function dateToJst(d: Date) {
+  const j = new Date(d.getTime() + 9 * 3600 * 1000);
+  return j.toISOString().slice(0, 16);
+}
+function skyDate(): Date {
+  if (P.skyMode === "set" && P.skyTime) { const d = jstToDate(P.skyTime); if (!isNaN(d.getTime())) return d; }
+  return new Date();
+}
+function updateSkyInfo(d: Date) {
+  if (!sky) return;
+  const when = `${dateToJst(d).replace("T", " ")}（日本時間）${P.skyMode === "now" ? " 現在" : ""}`;
+  const bodies = sky.bodies.map(b => `${b.name.padEnd(2, "　")} ${signText(b.lon)}　高度 ${b.alt >= 0 ? " " : ""}${b.alt.toFixed(0)}°`).join("\n");
+  const asp = [...sky.aspects].sort((a, b) => a.diff - b.diff)
+    .map(a => `${sky!.bodies[a.a].name}–${sky!.bodies[a.b].name} ${a.kind}（ずれ ${a.diff.toFixed(1)}°）`).join("\n");
+  $("skyInfo").textContent = `${when}\n\n${bodies}\n\nアスペクト\n${asp || "なし"}`;
+}
+$<HTMLSelectElement>("skyMode").addEventListener("change", e => {
+  P.skyMode = (e.target as HTMLSelectElement).value as "now" | "set";
+  if (P.skyMode === "set" && !P.skyTime) P.skyTime = dateToJst(new Date());
+  skyDirty = true; sync(); saveAll();
+});
+$<HTMLInputElement>("skyTime").addEventListener("input", e => {
+  P.skyTime = (e.target as HTMLInputElement).value; P.skyMode = "set"; skyDirty = true; sync(); saveAll();
+});
+$("bSkyNow").onclick = () => { P.skyMode = "now"; skyDirty = true; sync(); saveAll(); };
+
 // ---------- チューリングパターン ----------
 let rd: ReactionDiffusion | null = null;
 function ensureRD(): ReactionDiffusion | null {
@@ -187,6 +224,8 @@ function sync() {
   $<HTMLSelectElement>("ballPat").value = String(P.ballPat);
   $<HTMLSelectElement>("wallPat").value = String(P.wallPat);
   $<HTMLSelectElement>("rdRes").value = String(P.rdRes);
+  $<HTMLSelectElement>("skyMode").value = P.skyMode;
+  $<HTMLInputElement>("skyTime").value = P.skyMode === "set" ? P.skyTime : dateToJst(new Date());
   $<HTMLSelectElement>("rdVary").value = String(P.rdVary);
   $<HTMLSelectElement>("rdPresetA").value = String(presetIndex(P.rdFA, P.rdKA));
   $<HTMLSelectElement>("rdPresetB").value = String(presetIndex(P.rdFB, P.rdKB));
@@ -204,6 +243,7 @@ $<HTMLSelectElement>("n2").addEventListener("change", e => { S.n2 = parseFloat((
 $<HTMLSelectElement>("ballPat").addEventListener("change", e => {
   P.ballPat = parseInt((e.target as HTMLSelectElement).value, 10); saveAll();
   if (P.ballPat === 3) ($("rdPanel") as HTMLDetailsElement).open = true;
+  if (P.ballPat === 5) { ($("skyPanel") as HTMLDetailsElement).open = true; skyDirty = true; }
   if (P.ballPat === 4) void startCamera(); else stopCamera();
 });
 $<HTMLSelectElement>("rdRes").addEventListener("change", e => {
@@ -287,7 +327,9 @@ function frame(now: number) {
     // 小球の向き：端末の x 軸の方位に、時定数 followTau で遅れて追いつく
     const devHeading = bearingOf(orthoTo({ x: 1, y: 0, z: 0 }, target));
     if (ballHeading === null) ballHeading = devHeading;
-    const diff = ((devHeading - ballHeading + 540) % 360) - 180;
+    // 天球では小球の x 軸を東に固定する（地平座標にそろえる）。それ以外は端末の向きに遅れて追いつく
+    const goal = P.ballPat === 5 ? 90 : devHeading;
+    const diff = ((goal - ballHeading + 540) % 360) - 180;
     ballHeading = (ballHeading + diff * (1 - Math.exp(-dt / Math.max(0.05, P.followTau))) + 360) % 360;
     const hb = ballHeading * Math.PI / 180;
     xb = orthoTo(tilt.toDevice({ x: Math.sin(hb), y: Math.cos(hb), z: 0 }), zb);
@@ -325,6 +367,13 @@ function frame(now: number) {
     }
   }
 
+  // 天球：現在時刻なら1秒ごと、指定日時なら変更時に計算し直す
+  if (P.ballPat === 5 && (skyDirty || (P.skyMode === "now" && now - skyAt > 1000))) {
+    const d = skyDate();
+    try { sky = computeSky(d); updateSkyInfo(d); } catch (e) { hint.textContent = "天体の計算に失敗しました：" + String(e); }
+    skyAt = now; skyDirty = false;
+  }
+
   const E = eyeFromAngles(S, P.D, 0, 0);   // 画面に正対した固定の視点
   const R = (S.d * S.d / 4 + Math.min(S.h, S.d / 2) ** 2) / (2 * Math.min(S.h, S.d / 2));
   renderer.draw({
@@ -340,6 +389,23 @@ function frame(now: number) {
     gl.uniform3f(u.uBz, zb.x, zb.y, zb.z);
     gl.uniform1i(u.uBallPat, P.ballPat);
     gl.uniform1i(u.uWallPat, P.wallPat);
+    gl.uniform1f(u.uShadowK, P.ballPat === 5 ? 0.3 : 1.0);   // 天球は半透明なので影は薄く
+    if (P.ballPat === 5 && sky) {
+      const flat = (vs: number[][]) => new Float32Array(vs.flat());
+      gl.uniform3fv(u.uBodyDir, flat(sky.bodies.map(b => b.dir)));
+      gl.uniform3fv(u.uBodyCol, flat(sky.bodies.map(b => b.color)));
+      gl.uniform1fv(u.uBodySize, new Float32Array(sky.bodies.map(b => b.size)));
+      const asp = sky.aspects.slice(0, 21);
+      const pad = (a: number[][], n: number) => { while (a.length < n) a.push([0, 0, 0]); return a; };
+      gl.uniform3fv(u.uAspA, flat(pad(asp.map(a => sky!.bodies[a.a].dir), 21)));
+      gl.uniform3fv(u.uAspB, flat(pad(asp.map(a => sky!.bodies[a.b].dir), 21)));
+      const cols = asp.map(a => { const c = ASPECTS.find(x => x.kind === a.kind)!.color; return [c[0], c[1], c[2], a.exactness]; });
+      while (cols.length < 21) cols.push([0, 0, 0, 0]);
+      gl.uniform4fv(u.uAspC, new Float32Array(cols.flat()));
+      gl.uniform1i(u.uAspN, asp.length);
+      gl.uniform3fv(u.uEc0, sky.ec0); gl.uniform3fv(u.uEc90, sky.ec90);
+      gl.uniform3fv(u.uEcN, sky.ecN); gl.uniform3fv(u.uNcp, sky.ncp);
+    }
     // 鏡面球：カメラ位置・画角・左右の向きは表面モードの設定を使う
     const camOn = P.ballPat === 4 && updateCamTexture(gl);
     gl.uniform1i(u.uCamOn, camOn ? 1 : 0);

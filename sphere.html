@@ -26,6 +26,7 @@
       <option value="2">小球：無地（陶器）</option>
       <option value="3">小球：チューリングパターン</option>
       <option value="4">小球：鏡面球（インカメラの映り込み）</option>
+      <option value="5">小球：天球（東京から見た天体とアスペクト）</option>
     </select>
     <select id="wallPat">
       <option value="0">内壁：無地</option>
@@ -52,6 +53,20 @@
     <label class="s">小球の追従<input id="followTau" type="range" min="0.2" max="10" step="0.1"><output></output></label>
     <div class="hint">センサー使用中は、光は部屋に固定されます（光の方位＝北から時計回り）。部屋の照明に合わせるには、画面の左上が照明の方を向くように持ってボタンを押します。光の方向＝画面上の向き（右が 0°、左上が 135°）で、センサー未使用時とボタンの基準に使います。小球の追従＝スマホを水平に回したとき、小球が追いつくまでの時間。</div>
     <label class="s">見る距離<input id="D" type="range" min="100" max="800" step="10"><output></output></label>
+  </details>
+
+  <details id="skyPanel">
+    <summary>天球</summary>
+    <div class="row">
+      <select id="skyMode">
+        <option value="now">現在時刻</option>
+        <option value="set">日時を指定（日本時間）</option>
+      </select>
+      <input id="skyTime" type="datetime-local" step="60">
+      <button id="bSkyNow">今にする</button>
+    </div>
+    <div class="hint">中心が観測者（東京）。緑の大円が地平線（赤い目盛りが北）、金色の帯が黄道（白い目盛りが春分点、30° ごとに十二宮の区切り）、青い線が天の赤道と地軸です。傾きセンサーを有効にすると、実際の地平線と方角にそろいます。アスペクトの線は 合＝金、六分＝水色、矩＝橙、三分＝青、衝＝赤で、正確な角度に近いほど濃く太くなります（オーブ 8°、太陽・月が絡むと 10°）。</div>
+    <div class="info" id="skyInfo"></div>
   </details>
 
   <details id="rdPanel">

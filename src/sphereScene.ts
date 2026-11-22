@@ -19,7 +19,12 @@ uniform float uR, uCz, uZb;
 uniform float uInnerR;
 uniform vec3 uBx, uBy, uBz;          // 小球の座標軸（端末座標）。uBz が重力と逆の「上」
 uniform float uLat, uLon;            // 模様の向き：上に来る緯度、経度（自転）
-uniform int uBallPat;                // 0 経緯線、1 チェッカー、2 無地（陶器）、3 チューリングパターン、4 鏡面球
+uniform int uBallPat;                // 0 経緯線、1 チェッカー、2 無地（陶器）、3 チューリングパターン、4 鏡面球、5 天球
+// 天球モード（方向はすべて地平座標 ENU：x 東、y 北、z 天頂。uBx/uBy/uBz がその各軸の端末座標）
+uniform vec3 uBodyDir[7]; uniform vec3 uBodyCol[7]; uniform float uBodySize[7];
+uniform vec3 uAspA[21]; uniform vec3 uAspB[21]; uniform vec4 uAspC[21]; uniform int uAspN;
+uniform vec3 uEc0, uEc90, uEcN, uNcp;
+uniform float uShadowK;              // 小球が内壁に落とす影の濃さ
 uniform int uWallPat;                // 0 無地、1 方眼、2 経線（上下端が極）、3 縦横の格子（上下端・左右端が極の経線）
 uniform vec3 uLight;                 // 光の来る向き（端末座標、単位ベクトル）
 uniform vec3 uEye;                   // 視点（頂点シェーダと共通）
@@ -127,7 +132,7 @@ vec3 wallShade(vec3 W, vec3 L){
   if (t > 0.0) {
     float d = length(W + L * t - C);
     float soft = 0.25 + 0.07 * t;
-    sh = 1.0 - smoothstep(uInnerR - soft, uInnerR + soft, d);
+    sh = (1.0 - smoothstep(uInnerR - soft, uInnerR + soft, d)) * uShadowK;
   }
   // 深い所ほど暗く（光が届きにくい）
   float depth = clamp((uZb - W.z) / uR, 0.0, 1.0);
@@ -170,6 +175,130 @@ vec3 mirrorEnv(vec3 X, vec3 r, vec3 L){
   return env;
 }
 
+
+// ---------- 天球 ----------
+vec3 toENU(vec3 v){ return vec3(dot(v, uBx), dot(v, uBy), dot(v, uBz)); }
+vec3 fromENU(vec3 e){ return e.x * uBx + e.y * uBy + e.z * uBz; }
+
+// 2本の線分 p0+s·d0 (0≤s≤l0) と p1+t·d1 (0≤t≤l1) の最短距離²（d0, d1 は単位ベクトル）
+float segDist2(vec3 p0, vec3 d0, float l0, vec3 p1, vec3 d1, float l1){
+  vec3 r = p0 - p1;
+  float b = dot(d0, d1), c = dot(d0, r), f = dot(d1, r);
+  float den = 1.0 - b * b;
+  float s = den > 1e-6 ? clamp((b * f - c) / den, 0.0, l0) : 0.0;
+  float t = clamp(b * s + f, 0.0, l1);
+  s = clamp(b * t - c, 0.0, l0);
+  vec3 q = p0 + d0 * s - (p1 + d1 * t);
+  return dot(q, q);
+}
+
+// 天球の表面に描く線（地平線と東西南北、黄道の帯と十二宮の区切り、天の赤道と天の北極）。rgb と不透明度
+vec4 skyMarks(vec3 e){
+  vec4 m = vec4(0.0);
+  // 地平線
+  float wz = fwidth(e.z);
+  float hz = lineMask(abs(e.z), wz * 1.2);
+  float az = atan(e.x, e.y);                            // 北から東回り
+  float wa = fwidth(az) + 1e-4;
+  float card = 0.0, north = 0.0;
+  for (int k = 0; k < 4; k++) {
+    float a = float(k) * PI * 0.5;
+    float d = abs(atan(sin(az - a), cos(az - a)));
+    float tick = lineMask(d, wa * 1.5) * (1.0 - smoothstep(0.0, 0.12, abs(e.z)));
+    if (k == 0) north = tick; else card = max(card, tick);
+  }
+  m = mix(m, vec4(0.75, 0.95, 0.80, 0.85), max(hz, card));
+  m = mix(m, vec4(1.0, 0.25, 0.2, 1.0), north);
+  // 黄道の帯（黄緯 ±8°）と中心線、30° ごとの区切り（春分点は強め）
+  float beta = asin(clamp(dot(e, uEcN), -1.0, 1.0));
+  float lam = atan(dot(e, uEc90), dot(e, uEc0));
+  float wb = fwidth(beta);
+  float band = 1.0 - smoothstep(radians(8.0) - wb, radians(8.0) + wb, abs(beta));
+  m = mix(m, vec4(1.0, 0.85, 0.45, 0.22), band * 0.9);
+  m = mix(m, vec4(1.0, 0.85, 0.45, 0.9), lineMask(abs(beta), wb * 1.2));
+  float wl = fwidth(lam) + 1e-4;
+  float dl = abs(fract(lam / radians(30.0) + 0.5) - 0.5) * radians(30.0);
+  float d0 = abs(atan(sin(lam), cos(lam)));
+  m = mix(m, vec4(1.0, 0.85, 0.45, 0.85), lineMask(dl, wl * 1.2) * band);
+  m = mix(m, vec4(1.0, 0.95, 0.75, 1.0), lineMask(d0, wl * 2.2) * band);
+  // 天の赤道と天の北極
+  float dq = asin(clamp(dot(e, uNcp), -1.0, 1.0));
+  m = mix(m, vec4(0.45, 0.65, 1.0, 0.6), lineMask(abs(dq), fwidth(dq) * 1.1));
+  float dp = acos(clamp(dot(e, uNcp), -1.0, 1.0));
+  m = mix(m, vec4(0.6, 0.8, 1.0, 0.9), 1.0 - smoothstep(0.035, 0.05, dp));
+  return m;
+}
+
+vec3 skyRender(vec3 ro, vec3 rd, vec3 L, vec3 V){
+  vec3 C = vec3(0.0, 0.0, uCz);
+  // 背景：殻の内壁か、上へ抜ける
+  vec2 hs = hitSphere(ro, rd, C, uR);
+  vec3 W = ro + rd * max(hs.y, 0.0);
+  vec3 col = W.z > uZb + 0.01 ? vec3(0.01, 0.012, 0.02) : wallShade(W, L);
+  float rc = uInnerR;
+  vec2 hb = hitSphere(ro, rd, C, rc);
+  // 天体（天球の表面に乗った小さな球）
+  float tBody = 1e9; vec3 bodyCol = vec3(0.0);
+  for (int i = 0; i < 7; i++) {
+    vec3 P = C + rc * fromENU(uBodyDir[i]);
+    float br = rc * 0.055 * uBodySize[i];
+    vec2 h = hitSphere(ro, rd, P, br);
+    if (h.x > 0.0 && h.x < tBody) {
+      tBody = h.x;
+      vec3 nn = normalize(ro + rd * h.x - P);
+      float lam = max(dot(nn, L), 0.0);
+      // 地平線より下の天体は少し暗く
+      float below = uBodyDir[i].z < 0.0 ? 0.6 : 1.0;
+      vec3 c = uBodyCol[i] * (0.35 + 0.75 * lam) * below;
+      if (i == 0) c = uBodyCol[i] * 1.25;                 // 太陽は自ら光る
+      bodyCol = c + pow(max(dot(nn, normalize(L + V)), 0.0), 60.0) * 0.4;
+    }
+  }
+  if (hb.x <= 0.0) return tBody < 1e8 ? bodyCol : col;
+  float tMid = 0.5 * (hb.x + hb.y);
+  // 奥の面：ガラス越しに薄く
+  vec3 eB = toENU(normalize(ro + rd * hb.y - C));
+  vec4 mb = skyMarks(eB);
+  col = col * 0.78 + vec3(0.015, 0.025, 0.05);
+  col = mix(col, mb.rgb, mb.a * 0.45);
+  // 奥側の天体
+  if (tBody < 1e8 && tBody > tMid) col = bodyCol;
+  // 内部：地平面、地軸、観測者、アスペクトの線（加算で光らせる）
+  vec3 up = uBz;
+  float dn = dot(rd, up);
+  if (abs(dn) > 1e-4) {
+    float th = dot(C - ro, up) / dn;
+    vec3 Ph = ro + rd * th;
+    if (th > hb.x && th < hb.y && length(Ph - C) < rc) col = mix(col, vec3(0.55, 0.85, 0.65), 0.10);
+  }
+  float seg = hb.y - hb.x;
+  vec3 ncpD = fromENU(uNcp);
+  float da = segDist2(ro + rd * hb.x, rd, seg, C - ncpD * rc, ncpD, 2.0 * rc);
+  col += vec3(0.45, 0.65, 1.0) * exp(-da / (2.0 * 0.07 * 0.07)) * 0.5;
+  float dc = segDist2(ro + rd * hb.x, rd, seg, C, vec3(0.0, 0.0, 1.0), 0.0);
+  col += vec3(1.0) * (exp(-dc / (2.0 * 0.12 * 0.12)) * 1.2 + exp(-dc / (2.0 * 0.5 * 0.5)) * 0.15);
+  for (int i = 0; i < 21; i++) {
+    if (i >= uAspN) break;
+    vec3 A = C + rc * fromENU(uAspA[i]);
+    vec3 B = C + rc * fromENU(uAspB[i]);
+    vec3 dAB = B - A; float lAB = length(dAB);
+    float d2 = segDist2(ro + rd * hb.x, rd, seg, A, dAB / max(lAB, 1e-4), lAB);
+    float k = uAspC[i].a;                                  // 正確さ 0〜1
+    float wcore = 0.05 + 0.12 * k;
+    col += uAspC[i].rgb * (exp(-d2 / (2.0 * wcore * wcore)) * (0.35 + 1.1 * k) + exp(-d2 / (2.0 * 0.45 * 0.45)) * 0.18 * k);
+  }
+  // 手前側の天体
+  if (tBody < 1e8 && tBody <= tMid) col = bodyCol;
+  // 手前の面：線と、ガラスの照り
+  vec3 nF = normalize(ro + rd * hb.x - C);
+  vec4 mf = skyMarks(toENU(nF));
+  col = col * 0.92 + vec3(0.01, 0.015, 0.03);
+  col = mix(col, mf.rgb, mf.a * 0.85);
+  col += pow(max(dot(nF, normalize(L + V)), 0.0), 120.0) * 0.5;
+  col += pow(1.0 - max(dot(nF, V), 0.0), 4.0) * 0.12;
+  return col;
+}
+
 void main(){
   // 見立て：薄いガラスの殻の中が空気で満たされている。
   // 実物のドームでの屈折は「どの画素に届くか」にだけ効かせ、色を決める視線は目からまっすぐ進める。
@@ -180,6 +309,7 @@ void main(){
   vec3 V = -rd;
   vec3 L = normalize(uLight);
   vec3 col;
+  if (uBallPat == 5) { o = vec4(skyRender(ro, rd, L, V), 1.0); return; }
 
   vec2 hb = hitSphere(ro, rd, C, uInnerR);
   if (hb.x > 0.0) {
