@@ -20,7 +20,7 @@ uniform float uInnerR;
 uniform vec3 uBx, uBy, uBz;          // 小球の座標軸（端末座標）。uBz が重力と逆の「上」
 uniform float uLat, uLon;            // 模様の向き：上に来る緯度、経度（自転）
 uniform int uBallPat;                // 0 経緯線、1 チェッカー、2 無地（陶器）、3 チューリングパターン
-uniform int uWallPat;                // 0 無地、1 方眼
+uniform int uWallPat;                // 0 無地、1 方眼、2 緯線（上下端が極）、3 縦横の格子（上下端・左右端が極）
 uniform vec3 uLight;                 // 光の来る向き（端末座標、単位ベクトル）
 out vec4 o;
 const float PI = 3.14159265;
@@ -110,8 +110,28 @@ void main(){
         float w = max(fwidth(W.x), fwidth(W.y));
         // 斜めに見える所では 1mm の線が細かすぎてちらつくので薄くする
         float g1 = max(lineMask(abs(fract(W.x + 0.5) - 0.5), w), lineMask(abs(fract(W.y + 0.5) - 0.5), w)) * 0.25 * (1.0 - smoothstep(0.12, 0.35, w));
-        float g5 = max(lineMask(abs(fract(W.x / 5.0 + 0.5) - 0.5) * 5.0, w * 1.5), lineMask(abs(fract(W.y / 5.0 + 0.5) - 0.5) * 5.0, w * 1.5)) * 0.6;
+        float g5 = max(lineMask(abs(fract(W.x / 5.0 + 0.5) - 0.5) * 5.0, w * 1.5), lineMask(abs(fract(W.y / 5.0 + 0.5) - 0.5) * 5.0, w * 1.5)) * 0.6 * (1.0 - smoothstep(1.0, 2.5, w));
         wall = mix(vec3(0.90, 0.90, 0.86), vec3(0.30, 0.55, 0.52), max(g1, g5));
+      } else if (uWallPat >= 2) {
+        // 外殻の球の緯線。底面の上端・下端（画面の y 方向）を極とすると、緯線は y 一定の面との交線。
+        // 格子では、左右端（x 方向）を極とする緯線も重ねる
+        vec3 q = normalize(W - C);
+        float latY = degrees(asin(clamp(q.y, -1.0, 1.0)));
+        float latX = degrees(asin(clamp(q.x, -1.0, 1.0)));
+        float wy = fwidth(latY), wx = fwidth(latX);
+        // 光学的な折り返し（コースティック）の付近では像の変化が急で fwidth が跳ね上がり、
+        // 偽の太線が出るので、変化が急な所では線を消す
+        float fy = 1.0 - smoothstep(0.6, 1.5, wy), fx = 1.0 - smoothstep(0.6, 1.5, wx);
+        // 液体の球はレンズとして働き、真上から見える内壁は底の極のまわり ±12° ほどに限られる。
+        // そこで 2° ごとの細線と 10° ごとの太線にする
+        float ly = max(max(lineMask(abs(fract(latY / 2.0 + 0.5) - 0.5) * 2.0, wy) * 0.35,
+                           lineMask(abs(fract(latY / 10.0 + 0.5) - 0.5) * 10.0, wy * 1.4) * 0.75),
+                       lineMask(abs(latY), wy * 2.0)) * fy;
+        float lx = 0.0;
+        if (uWallPat == 3) lx = max(max(lineMask(abs(fract(latX / 2.0 + 0.5) - 0.5) * 2.0, wx) * 0.35,
+                                        lineMask(abs(fract(latX / 10.0 + 0.5) - 0.5) * 10.0, wx * 1.4) * 0.75),
+                                    lineMask(abs(latX), wx * 2.0)) * fx;
+        wall = mix(vec3(0.90, 0.90, 0.86), vec3(0.30, 0.55, 0.52), max(ly, lx));
       }
       float lam = max(dot(n, L), 0.0);
       // 小球の影：内壁の点から光の方へ伸ばした線が小球をかすめる度合い（遠いほどぼかす）
