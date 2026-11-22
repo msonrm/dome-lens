@@ -1,4 +1,4 @@
-// 液体の球モード（sphere.html）
+// ガラス球モード（sphere.html）
 import "./style.css";
 import { eyeFromAngles, type Vec3 } from "./optics";
 import { Renderer } from "./renderer";
@@ -22,27 +22,20 @@ interface PageSettings {
   rdRes: number; rdSteps: number;
   rdFA: number; rdKA: number; rdFB: number; rdKB: number;
   rdVary: number; rdAxisTilt: number; rdBlend: number;
-  medium?: number;        // 旧設定（0 液体、1 空気）。nIn に置き換え
-  nIn: number | null;     // 中身の屈折率（null ならドームと同じ）
 }
 const PDEF: PageSettings = {
   ratio: 0.6, ballPat: 0, wallPat: 1, lat: 35, spd: 6, lightAz: 135, lightElev: 55, D: 300, lightBearing: 315, followTau: 3,
   rdRes: 192, rdSteps: 12, rdFA: 0.029, rdKA: 0.057, rdFB: 0.035, rdKB: 0.065, rdVary: 1, rdAxisTilt: 90, rdBlend: 0.25,
-  nIn: null,
 };
 const PKEY = "domeLens.sphere.v1";
 const P: PageSettings = { ...PDEF };
 try { Object.assign(P, JSON.parse(localStorage.getItem(PKEY) ?? "{}")); } catch { /* 既定値で動く */ }
-// 旧設定（液体／空気の切り替え）からの移行
-if (P.medium === 1 && P.nIn === null) P.nIn = 1.0;
-delete P.medium;
-const nInNow = () => P.nIn ?? S.n;
 const saveAll = () => { save(S); try { localStorage.setItem(PKEY, JSON.stringify(P)); } catch { /* 無視 */ } };
 
 // ---------- 描画 ----------
 const canvas = $<HTMLCanvasElement>("gl");
 let renderer: Renderer;
-try { renderer = new Renderer(canvas, SPHERE_FS, ["uInnerR", "uBx", "uBy", "uBz", "uBallPat", "uWallPat", "uField", "uFieldN", "uNin", "uLines"]); }
+try { renderer = new Renderer(canvas, SPHERE_FS, ["uInnerR", "uBx", "uBy", "uBz", "uBallPat", "uWallPat", "uField", "uFieldN"]); }
 catch (e) { hint.textContent = "WebGL2 が使えないため表示できません。"; throw e; }
 
 let W = 0, H = 0;
@@ -95,7 +88,7 @@ canvas.addEventListener("pointercancel", up);
 // ---------- 傾きセンサー ----------
 const tilt = new TiltSensor();
 let tiltOn = false;
-// 小球の「上」：液体の中でゆっくり水平に戻る（重力の向きに遅れて追従）
+// 小球の「上」：ゆっくり水平に戻る（重力の向きに遅れて追従）
 let ballUp: Vec3 = { x: 0, y: 0, z: 1 };
 
 // ---------- UI ----------
@@ -147,8 +140,6 @@ function sync() {
   $<HTMLSelectElement>("ballPat").value = String(P.ballPat);
   $<HTMLSelectElement>("wallPat").value = String(P.wallPat);
   $<HTMLSelectElement>("rdRes").value = String(P.rdRes);
-  $<HTMLInputElement>("nIn").value = String(nInNow());
-  $("nIn").parentElement!.querySelector("output")!.textContent = nInNow().toFixed(2);
   $<HTMLSelectElement>("rdVary").value = String(P.rdVary);
   $<HTMLSelectElement>("rdPresetA").value = String(presetIndex(P.rdFA, P.rdKA));
   $<HTMLSelectElement>("rdPresetB").value = String(presetIndex(P.rdFB, P.rdKB));
@@ -171,10 +162,6 @@ $<HTMLSelectElement>("rdRes").addEventListener("change", e => {
   P.rdRes = parseInt((e.target as HTMLSelectElement).value, 10); saveAll();
   rd?.resize(P.rdRes);
 });
-$<HTMLInputElement>("nIn").addEventListener("input", e => { P.nIn = parseFloat((e.target as HTMLInputElement).value); sync(); saveAll(); });
-$("bNAir").onclick = () => { P.nIn = 1.0; sync(); saveAll(); };
-$("bNWater").onclick = () => { P.nIn = 1.33; sync(); saveAll(); };
-$("bNDome").onclick = () => { P.nIn = null; sync(); saveAll(); };
 $<HTMLSelectElement>("rdVary").addEventListener("change", e => { P.rdVary = parseInt((e.target as HTMLSelectElement).value, 10); saveAll(); });
 $("bRdReset").onclick = () => { ensureRD()?.seed(); };
 $<HTMLSelectElement>("wallPat").addEventListener("change", e => { P.wallPat = parseInt((e.target as HTMLSelectElement).value, 10); saveAll(); });
@@ -225,7 +212,7 @@ function orthoTo(v: Vec3, axis: Vec3): Vec3 {
   return norm({ x: v.x - axis.x * k, y: v.y - axis.y * k, z: v.z - axis.z * k });
 }
 
-// 小球の水平方向の向き（x 軸の方位、度）。端末を回すと、その場に留まってから液体に引きずられて追いつく
+// 小球の水平方向の向き（x 軸の方位、度）。端末を回すと、その場に留まってからゆっくり追いつく
 let ballHeading: number | null = null;
 // 光の向き（端末座標）。方位センサーの細かい揺れを抑えるために平滑化する
 let lightSm: Vec3 | null = null;
@@ -305,11 +292,6 @@ function frame(now: number) {
     gl.uniform3f(u.uBz, zb.x, zb.y, zb.z);
     gl.uniform1i(u.uBallPat, P.ballPat);
     gl.uniform1i(u.uWallPat, P.wallPat);
-    const nl = nInNow();
-    gl.uniform1f(u.uNin, nl);
-    // 見える内壁の範囲に合わせた線の間隔（細線、太線、線を消し始める変化量）
-    const lines = nl < 1.15 ? [10, 30, 3.0] : nl < 1.3 ? [5, 15, 1.5] : nl < 1.45 ? [3, 15, 1.0] : [2, 10, 0.6];
-    gl.uniform3f(u.uLines, lines[0], lines[1], lines[2]);
     if (field) {
       gl.activeTexture(gl.TEXTURE1);
       gl.bindTexture(gl.TEXTURE_2D, field.texture);
