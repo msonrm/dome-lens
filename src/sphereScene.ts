@@ -93,6 +93,28 @@ vec3 ballColor(vec3 n){
 }
 
 // 内壁の色（点 W、光 L）。視線が直接当たるときと、鏡面球に映るときの両方で使う
+// 金属線1組（経度 lon が一定の線を N 本）を内壁の色 col に重ねる。
+// side は経度が増える向きの接線。線の断面を円柱とみなして照りと暗い縁を付け、光と反対側に細い影を落とす
+vec3 wireLayer(vec3 col, float lon, vec3 side, vec3 q, vec3 n, vec3 L, vec3 W){
+  float sp = PI / float(uWireN + 1);                    // 線の間隔
+  float k = clamp(floor(lon / sp + float(uWireN - 1) * 0.5 + 0.5), 0.0, float(uWireN - 1));
+  float wireLon = (k - float(uWireN - 1) * 0.5) * sp;   // 本数が偶数でも中央対称
+  float r = 0.22 / uR;                                  // 線の太さ（半径 0.22mm）を角度に
+  float d = (lon - wireLon) / r;                        // 線の中心からの距離（半径単位）
+  float shift = -dot(L, side) * 1.8;
+  col *= 1.0 - exp(-pow((d - shift) / 1.6, 2.0)) * 0.55 * max(dot(n, L), 0.0);
+  if (abs(d) < 1.0) {
+    vec3 nw = normalize(n * sqrt(1.0 - d * d) - side * d);   // 円柱の表面の法線
+    vec3 V = normalize(uEye - W);
+    vec3 H = normalize(L + V);
+    float dif = max(dot(nw, L), 0.0);
+    float spc = pow(max(dot(nw, H), 0.0), 60.0);
+    vec3 wc = vec3(0.62, 0.63, 0.66) * (0.12 + 0.55 * dif) + vec3(1.0) * spc * 1.1;
+    col = mix(wc, col, smoothstep(0.75, 1.0, abs(d)));
+  }
+  return col;
+}
+
 vec3 wallShade(vec3 W, vec3 L){
   vec3 C = vec3(0.0, 0.0, uCz);
   vec3 n = normalize(C - W);            // 内側向きの法線
@@ -139,35 +161,12 @@ vec3 wallShade(vec3 W, vec3 L){
   // 深い所ほど暗く（光が届きにくい）
   float depth = clamp((uZb - W.z) / uR, 0.0, 1.0);
   vec3 col = wall * (0.14 + 0.86 * lam * (1.0 - 0.75 * sh)) * mix(1.0, 0.7, depth);
-  if (uWallPat == 4) {
-    // 金属線（縦）：実物と同じく、上下端を極とする経線に沿って N 本の細い金属線を張る。
-    // 線の断面を円柱とみなして、明るい照りと暗い縁を付け、光と反対側の内壁に細い影を落とす
+  if (uWallPat == 4 || uWallPat == 5) {
+    // 金属線：実物と同じく経線に沿って N 本の細い金属線を張る。
+    // 縦は上下端（y 軸）を極、縦横では左右端（x 軸）を極とする線も重ねる
     vec3 q = normalize(W - C);
-    float lonY = atan(q.x, -q.z);                       // 上下端が極の経度（真下が 0）
-    float sp = PI / float(uWireN + 1);                  // 線の間隔
-    // 本数が偶数でも中央対称になるよう、線の位置は (k − (N−1)/2)·sp
-    float k = floor(lonY / sp + float(uWireN - 1) * 0.5 + 0.5);
-    k = clamp(k, 0.0, float(uWireN - 1));
-    float wireLon = (k - float(uWireN - 1) * 0.5) * sp;
-    float r = 0.22 / uR;                                // 線の太さ（半径 0.22mm）を角度に
-    float d = (lonY - wireLon) / r;                     // 線の中心からの距離（半径単位）
-    // 経度が増える向き（内壁の接線）
-    vec3 side = normalize(cross(vec3(0.0, 1.0, 0.0), q));
-    // 影：光の接線成分と反対側に少しずらした位置に、ぼけた影
-    float shift = -dot(L, side) * 1.8;
-    float shadow = exp(-pow((d - shift) / 1.6, 2.0)) * 0.55 * max(dot(n, L), 0.0);
-    col *= 1.0 - shadow;
-    if (abs(d) < 1.0) {
-      vec3 nw = normalize(n * sqrt(1.0 - d * d) - side * d);   // 円柱の表面の法線（内壁から見て手前向き）
-      vec3 V = normalize(uEye - W);
-      vec3 H = normalize(L + V);
-      float dif = max(dot(nw, L), 0.0);
-      float spc = pow(max(dot(nw, H), 0.0), 60.0);
-      vec3 metal = vec3(0.62, 0.63, 0.66);
-      vec3 wc = metal * (0.12 + 0.55 * dif) + vec3(1.0) * spc * 1.1;
-      float edge = smoothstep(0.75, 1.0, abs(d));
-      col = mix(wc, col, edge);
-    }
+    col = wireLayer(col, atan(q.x, -q.z), normalize(cross(vec3(0.0, 1.0, 0.0), q)), q, n, L, W);
+    if (uWallPat == 5) col = wireLayer(col, atan(q.y, -q.z), normalize(cross(vec3(-1.0, 0.0, 0.0), q)), q, n, L, W);
   }
   return col;
 }
