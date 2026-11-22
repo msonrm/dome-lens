@@ -7,6 +7,7 @@ import { TiltSensor } from "./level";
 import { load, save, type Settings } from "./settings";
 import { ReactionDiffusion, RD_PRESETS } from "./rd";
 import { computeSky, signText, ASPECTS, type Sky } from "./sky";
+import { WireInput, rotateAbout, type Pad } from "./wires";
 
 const $ = <T extends HTMLElement = HTMLElement>(id: string) => document.getElementById(id) as T;
 const hint = $("hint");
@@ -28,12 +29,16 @@ interface PageSettings {
   skyMode: "now" | "set"; // 天球：現在時刻か指定日時か
   skyTime: string;        // 指定日時（日本時間、datetime-local の書式）
   belowDark: number;      // 地平線より下を暗くする度合い
+  pads: Pad[];            // 金属線につながるパッドの位置（左の線から順）
+  wireInvert: boolean;    // なぞった向きと回る向きを反転
+  wireGain: number;       // 回す強さ
 }
 const PDEF: PageSettings = {
   ratio: 0.6, ballPat: 0, wallPat: 1, lat: 35, spd: 6, lightAz: 135, lightElev: 55, D: 300, lightBearing: 315, followTau: 3,
   rdRes: 192, rdSteps: 12, rdFA: 0.029, rdKA: 0.057, rdFB: 0.035, rdKB: 0.065, rdVary: 1, rdAxisTilt: 90, rdBlend: 0.25,
   spread: 2.0, camSat: 1.0,
   skyMode: "now", skyTime: "", belowDark: 0.75,
+  pads: [], wireInvert: false, wireGain: 1,
 };
 const PKEY = "domeLens.sphere.v1";
 const P: PageSettings = { ...PDEF };
@@ -76,7 +81,7 @@ function snap() {
   return { x: (p.x + q.x) / 2, y: (p.y + q.y) / 2, dist: Math.hypot(p.x - q.x, p.y - q.y) };
 }
 canvas.addEventListener("pointerdown", e => {
-  if (!calMode) return;
+  if (!calMode) { onWireTouch(e); return; }
   canvas.setPointerCapture(e.pointerId);
   pts.set(e.pointerId, { x: e.clientX, y: e.clientY }); last = snap();
 });
@@ -95,6 +100,67 @@ const up = (e: PointerEvent) => { pts.delete(e.pointerId); last = pts.size ? sna
 canvas.addEventListener("pointerup", up);
 canvas.addEventListener("pointercancel", up);
 
+// ---------- 金属線（なぞって回す） ----------
+const wires = new WireInput();
+wires.pads = P.pads.map(p => ({ ...p }));
+let touchDiag = false;
+const touchLayer = $("touchLayer");
+const padEls: HTMLElement[] = [];
+function drawPads() {
+  padEls.forEach(el => el.remove()); padEls.length = 0;
+  if (!touchDiag && !wires.registering) return;
+  wires.pads.forEach((p, i) => {
+    const el = document.createElement("div");
+    el.className = "pmark"; el.textContent = String(i + 1);
+    el.style.left = p.x + "px"; el.style.top = p.y + "px";
+    touchLayer.appendChild(el); padEls.push(el);
+  });
+}
+function flashTouch(x: number, y: number) {
+  const el = document.createElement("div");
+  el.className = "tmark"; el.style.left = x + "px"; el.style.top = y + "px";
+  touchLayer.appendChild(el);
+  setTimeout(() => { el.style.opacity = "0"; }, 250);
+  setTimeout(() => el.remove(), 900);
+}
+function wireStatus(msg?: string) {
+  const reg = wires.registering ? `登録中：${wires.pads.length + 1} 本目の線に触れてください。` : "";
+  $("wireInfo").textContent = msg ?? (reg || (wires.pads.length ? `登録済み：${wires.pads.length} 本` : "未登録"));
+}
+wires.onPad = k => {
+  const el = padEls[k]; if (!el) return;
+  el.classList.add("hit"); setTimeout(() => el.classList.remove("hit"), 300);
+};
+// 回転の状態
+let rollA = 0, rollAv = 0;                                 // 揺れて戻る（経緯線・チェッカー・無地）
+let rollBv = 0;                                            // 回ったまま（チューリングパターン）
+let rollB = { x: { x: 1, y: 0, z: 0 }, y: { x: 0, y: 1, z: 0 }, z: { x: 0, y: 0, z: 1 } };
+let skyPsi = 0, skyPsiV = 0;                               // 天球：天頂軸まわり
+wires.onSwipe = omega => {
+  const w = omega * P.wireGain * (P.wireInvert ? -1 : 1);
+  if (P.ballPat === 3) rollBv += w;
+  else if (P.ballPat === 5) skyPsiV += w;
+  else if (P.ballPat !== 4) rollAv += w;
+};
+function onWireTouch(e: PointerEvent) {
+  const r = wires.touch(e.clientX, e.clientY, e.timeStamp || performance.now());
+  if (touchDiag || wires.registering) flashTouch(e.clientX, e.clientY);
+  if (r.kind === "register") { drawPads(); wireStatus(); }
+}
+$("bTouchDiag").onclick = () => { touchDiag = !touchDiag; drawPads(); sync(); };
+$("bWireReg").onclick = () => {
+  if (wires.registering) {
+    wires.registering = false;
+    P.pads = wires.pads.map(p => ({ ...p })); saveAll();
+    drawPads(); sync(); wireStatus();
+    return;
+  }
+  wires.pads = []; wires.registering = true;
+  drawPads(); sync(); wireStatus();
+};
+$("bWireClear").onclick = () => { wires.pads = []; wires.registering = false; P.pads = []; saveAll(); drawPads(); sync(); wireStatus(); };
+$("bWireInv").onclick = () => { P.wireInvert = !P.wireInvert; sync(); saveAll(); };
+
 // ---------- 傾きセンサー ----------
 const tilt = new TiltSensor();
 let tiltOn = false;
@@ -104,20 +170,20 @@ let ballUp: Vec3 = { x: 0, y: 0, z: 1 };
 // ---------- UI ----------
 type SKey = "d" | "h" | "n" | "gap" | "glass" | "camX" | "camY";
 type PKey = "ratio" | "lat" | "spd" | "lightAz" | "lightElev" | "D" | "lightBearing" | "followTau"
-  | "rdSteps" | "rdFA" | "rdKA" | "rdFB" | "rdKB" | "rdAxisTilt" | "rdBlend" | "spread" | "camSat" | "belowDark";
+  | "rdSteps" | "rdFA" | "rdKA" | "rdFB" | "rdKB" | "rdAxisTilt" | "rdBlend" | "spread" | "camSat" | "belowDark" | "wireGain";
 const units: Record<string, string> = {
   d: "mm", h: "mm", n: "", gap: "mm", glass: "mm", camX: "mm", camY: "mm",
   ratio: "×", lat: "°", spd: "°/s", lightAz: "°", lightElev: "°", D: "mm", lightBearing: "°", followTau: "秒",
-  rdSteps: "/フレーム", rdFA: "", rdKA: "", rdFB: "", rdKB: "", rdAxisTilt: "°", rdBlend: "", spread: "×", camSat: "", belowDark: "",
+  rdSteps: "/フレーム", rdFA: "", rdKA: "", rdFB: "", rdKB: "", rdAxisTilt: "°", rdBlend: "", spread: "×", camSat: "", belowDark: "", wireGain: "×",
 };
 const sKeys: SKey[] = ["d", "h", "n", "gap", "glass", "camX", "camY"];
 // カメラの画角（長辺、度）⇔ 焦点距離の比（焦点距離 ÷ 映像の長辺）
 const fovToRatio = (deg: number) => 0.5 / Math.tan(deg * Math.PI / 360);
 const ratioToFov = (r: number) => Math.round(360 / Math.PI * Math.atan(0.5 / r));
 const pKeys: PKey[] = ["ratio", "lat", "spd", "lightAz", "lightElev", "D", "lightBearing", "followTau",
-  "rdSteps", "rdFA", "rdKA", "rdFB", "rdKB", "rdAxisTilt", "rdBlend", "spread", "camSat", "belowDark"];
+  "rdSteps", "rdFA", "rdKA", "rdFB", "rdKB", "rdAxisTilt", "rdBlend", "spread", "camSat", "belowDark", "wireGain"];
 const fmt = (k: string, v: number) =>
-  (k === "n" || k === "ratio" || k === "rdBlend" || k === "spread" || k === "camSat" || k === "belowDark" ? v.toFixed(2) : k.startsWith("rdF") || k.startsWith("rdK") ? v.toFixed(4) : String(v)) + units[k];
+  (k === "n" || k === "ratio" || k === "rdBlend" || k === "spread" || k === "camSat" || k === "belowDark" || k === "wireGain" ? v.toFixed(2) : k.startsWith("rdF") || k.startsWith("rdK") ? v.toFixed(4) : String(v)) + units[k];
 
 // ---------- 鏡面球に映すインカメラの映像 ----------
 const camVideo = document.createElement("video");
@@ -235,6 +301,9 @@ function sync() {
   $<HTMLSelectElement>("rdPresetB").value = String(presetIndex(P.rdFB, P.rdKB));
   toggle("bTilt", tiltOn, "傾きセンサー 動作中", "傾きセンサーを有効にする");
   toggle("bFlip", S.flipX, "左右反転 ON", "左右反転 OFF");
+  toggle("bTouchDiag", touchDiag, "タッチ確認 ON", "タッチ確認 OFF");
+  toggle("bWireReg", wires.registering, "登録を終える", "線を登録");
+  toggle("bWireInv", P.wireInvert, "向きを反転 ON", "向きを反転 OFF");
   $<HTMLInputElement>("camFov").value = String(ratioToFov(S.fxRatio));
   $("camFov").parentElement!.querySelector("output")!.textContent = ratioToFov(S.fxRatio) + "°";
   // 選んでいる模様とセンサーの状態に関係のある項目だけ見せる
@@ -361,7 +430,33 @@ function frame(now: number) {
     const la = P.lightAz * Math.PI / 180;
     lightTarget = { x: Math.cos(le) * Math.cos(la), y: Math.cos(le) * Math.sin(la), z: Math.sin(le) };
   }
-  const yb = cross(zb, xb);
+  let yb = cross(zb, xb);
+  // 金属線でなぞった回転を加える
+  {
+    // 揺れて戻る：重い側が下の球が転がされ、重さで元に戻る（減衰振動）
+    const w0 = 2 * Math.PI * 0.8, zeta = 0.12;
+    const n = Math.max(1, Math.ceil(dt / (1 / 240))), h = dt / n;
+    for (let i = 0; i < n; i++) { rollAv += (-w0 * w0 * rollA - 2 * zeta * w0 * rollAv) * h; rollA += rollAv * h; }
+    // 回ったまま：摩擦でゆっくり止まる。回転は端末に固定した座標で積み重ねる
+    const dB = rollBv * dt; rollBv *= Math.exp(-dt / 1.5);
+    const Y = { x: 0, y: 1, z: 0 };
+    if (Math.abs(dB) > 1e-6) rollB = { x: norm(rotateAbout(rollB.x, Y, dB)), y: norm(rotateAbout(rollB.y, Y, dB)), z: norm(rotateAbout(rollB.z, Y, dB)) };
+    // 天球：天頂軸まわりに回し、摩擦で止まる
+    skyPsi += skyPsiV * dt; skyPsiV *= Math.exp(-dt / 2.0);
+  }
+  let bx = xb, by = yb, bz = zb;
+  if (P.ballPat === 0 || P.ballPat === 1 || P.ballPat === 2) {
+    // 線は画面の上下端を極とする経線なので、なぞると画面の y 軸まわりに転がる
+    const Y = { x: 0, y: 1, z: 0 };
+    bx = rotateAbout(xb, Y, rollA); by = rotateAbout(yb, Y, rollA); bz = rotateAbout(zb, Y, rollA);
+  } else if (P.ballPat === 3) {
+    const M = rollB, ap = (v: Vec3) => ({ x: M.x.x * v.x + M.y.x * v.y + M.z.x * v.z, y: M.x.y * v.x + M.y.y * v.y + M.z.y * v.z, z: M.x.z * v.x + M.y.z * v.y + M.z.z * v.z });
+    bx = ap(xb); by = ap(yb); bz = ap(zb);
+  } else if (P.ballPat === 5) {
+    bx = rotateAbout(xb, zb, skyPsi); by = rotateAbout(yb, zb, skyPsi);
+  }
+  xb = bx; yb = by;
+  const zbR = bz;
   if (!lightSm) lightSm = lightTarget;
   const al = 1 - Math.exp(-dt / 0.15);
   lightSm = norm({ x: lightSm.x + (lightTarget.x - lightSm.x) * al, y: lightSm.y + (lightTarget.y - lightSm.y) * al, z: lightSm.z + (lightTarget.z - lightSm.z) * al });
@@ -403,7 +498,7 @@ function frame(now: number) {
     gl.uniform1f(u.uInnerR, R * P.ratio);
     gl.uniform3f(u.uBx, xb.x, xb.y, xb.z);
     gl.uniform3f(u.uBy, yb.x, yb.y, yb.z);
-    gl.uniform3f(u.uBz, zb.x, zb.y, zb.z);
+    gl.uniform3f(u.uBz, zbR.x, zbR.y, zbR.z);
     gl.uniform1i(u.uBallPat, P.ballPat);
     gl.uniform1i(u.uWallPat, P.wallPat);
     gl.uniform1f(u.uShadowK, P.ballPat === 5 ? 0.3 : 1.0);   // 天球は半透明なので影は薄く
@@ -456,6 +551,6 @@ function frame(now: number) {
   requestAnimationFrame(frame);
 }
 
-resize(); sync();
+resize(); sync(); wireStatus();
 if (P.ballPat === 4) void startCamera();
 requestAnimationFrame(frame);

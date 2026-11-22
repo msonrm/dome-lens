@@ -19,3 +19,7 @@ a.btn { display: inline-block; background: #2a2a32; color: #eee; border: 1px sol
 .lbl { color: #bbb; align-self: center; min-width: 6.5em; }
 .info { font-size: 12px; color: #ccd; white-space: pre-wrap; font-variant-numeric: tabular-nums; margin: 6px 0; }
 input[type="datetime-local"] { background: #2a2a32; color: #eee; border: 1px solid #444; border-radius: 8px; padding: 6px 8px; font: inherit; color-scheme: dark; }
+#touchLayer { position: fixed; inset: 0; pointer-events: none; }
+.tmark { position: absolute; width: 34px; height: 34px; margin: -17px 0 0 -17px; border-radius: 50%; border: 2px solid #4cf; box-sizing: border-box; transition: opacity .6s; }
+.pmark { position: absolute; width: 22px; height: 22px; margin: -11px 0 0 -11px; border-radius: 50%; border: 2px solid #fd4; color: #fd4; font: 11px/18px system-ui; text-align: center; box-sizing: border-box; }
+.pmark.hit { background: rgba(255, 220, 60, .55); color: #000; }
