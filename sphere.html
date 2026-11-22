@@ -103,7 +103,8 @@
     <summary>ドームと素材（表面モードと共通）</summary>
     <label class="s">直径<input id="d" type="range" min="10" max="80" step="0.5"><output></output></label>
     <label class="s">高さ<input id="h" type="range" min="1" max="40" step="0.5"><output></output></label>
-    <label class="s">屈折率<input id="n" type="range" min="1.30" max="1.80" step="0.01"><output></output></label>
+    <label class="s">屈折率<input id="n" type="range" min="1.00" max="1.80" step="0.01"><output></output></label>
+    <div class="hint">1.00 にするとドームなし（画面だけで見る）になります。そのときは底面の層を「空気」、厚みを 0 にしてください。</div>
     <label class="s">底面の層<select id="n2">
       <option value="1">空気</option>
       <option value="1.33">水</option>
