@@ -15,9 +15,10 @@ export const IS_IOS = /iPad|iPhone|iPod/.test(navigator.userAgent) ||
 
 export class TiltSensor {
   /**
-   * 画面の向きの補正。"auto" は、Android では画面の回転ぶん回し、
-   * iOS / iPadOS では回さない（センサー値がすでに今の画面の向きを基準にしているため）。
-   * 数値（度）を入れると、その角度ぶん回す（機種ごとの手動調整用）
+   * 画面の向きの補正。センサー値は端末本来の向き（iPad ならカメラが右の縦持ち）が基準なので、
+   * 画面が回転しているぶん回して画面の座標に合わせる。
+   * "auto" は回転角を自動で読む：iOS / iPadOS では screen.orientation.angle が正しくないため
+   * window.orientation を使う。数値（度）を入れると、その角度を足す（機種ごとの手動調整用）
    */
   rotation: "auto" | number = "auto";
   up: V3 = { x: 0, y: 0, z: 1 };
@@ -52,11 +53,10 @@ export class TiltSensor {
     // 画面が回転している場合（横向き表示）は、画面の座標系に合わせて回す
     // 角度は端末を反時計回りに回した量（90 なら上端が左を向いた横向き）。
     // そのとき画面の右＝端末の下（−y）、画面の上＝端末の右（＋x）なので、+角度ぶん回す
-    let deg: number;
-    if (this.rotation === "auto") {
-      const legacy = (window as unknown as { orientation?: number }).orientation;
-      deg = IS_IOS ? 0 : (screen.orientation?.angle ?? (typeof legacy === "number" ? legacy : 0));
-    } else deg = this.rotation;
+    const legacy = (window as unknown as { orientation?: number }).orientation;
+    let deg = IS_IOS && typeof legacy === "number" ? legacy
+      : (screen.orientation?.angle ?? (typeof legacy === "number" ? legacy : 0));
+    if (this.rotation !== "auto") deg += this.rotation;
     const ang = deg * Math.PI / 180;
     if (ang) { const c = Math.cos(ang), s = Math.sin(ang); [x, y] = [c * x - s * y, s * x + c * y]; }
     return { x, y, z };

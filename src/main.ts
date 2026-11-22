@@ -32,7 +32,7 @@ interface PageSettings {
   pads: Pad[];            // 金属線につながるパッドの位置（左の線から順）
   wireInvert: boolean;    // なぞった向きと回る向きを反転
   wireGain: number;       // 回す強さ
-  sensorRot: string;      // センサーの向きの補正（"auto" か角度）
+  sensorRot: string;      // センサーの向きの補正（"auto" か、自動に足す角度）
 }
 const PDEF: PageSettings = {
   ratio: 0.6, ballPat: 0, wallPat: 1, lat: 35, spd: 6, lightAz: 135, lightElev: 55, D: 300, lightBearing: 315, followTau: 3,
@@ -44,6 +44,7 @@ const PDEF: PageSettings = {
 const PKEY = "domeLens.sphere.v1";
 const P: PageSettings = { ...PDEF };
 try { Object.assign(P, JSON.parse(localStorage.getItem(PKEY) ?? "{}")); } catch { /* 既定値で動く */ }
+if (P.sensorRot === "0") P.sensorRot = "auto";   // 以前の「補正なし」は自動に戻す
 const saveAll = () => { save(S); try { localStorage.setItem(PKEY, JSON.stringify(P)); } catch { /* 無視 */ } };
 
 // ---------- 描画 ----------
