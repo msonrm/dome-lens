@@ -40,8 +40,12 @@ export class TiltSensor {
     // Ry^T
     [x, z] = [cg * x - sg * z, sg * x + cg * z];
     // 画面が回転している場合（横向き表示）は、画面の座標系に合わせて回す
-    const ang = (screen.orientation?.angle ?? 0) * Math.PI / 180;
-    if (ang) { const c = Math.cos(ang), s = Math.sin(ang); [x, y] = [c * x + s * y, -s * x + c * y]; }
+    // 角度は端末を反時計回りに回した量（90 なら上端が左を向いた横向き）。
+    // そのとき画面の右＝端末の下（−y）、画面の上＝端末の右（＋x）なので、+角度ぶん回す
+    const legacy = (window as unknown as { orientation?: number }).orientation;
+    const deg = screen.orientation?.angle ?? (typeof legacy === "number" ? legacy : 0);
+    const ang = deg * Math.PI / 180;
+    if (ang) { const c = Math.cos(ang), s = Math.sin(ang); [x, y] = [c * x - s * y, s * x + c * y]; }
     return { x, y, z };
   }
 
