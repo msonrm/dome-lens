@@ -22,10 +22,12 @@ interface PageSettings {
   rdRes: number; rdSteps: number;
   rdFA: number; rdKA: number; rdFB: number; rdKB: number;
   rdVary: number; rdAxisTilt: number; rdBlend: number;
+  medium: number;         // 0 液体、1 空気
 }
 const PDEF: PageSettings = {
   ratio: 0.6, ballPat: 0, wallPat: 1, lat: 35, spd: 6, lightAz: 135, lightElev: 55, D: 300, lightBearing: 315, followTau: 3,
   rdRes: 192, rdSteps: 12, rdFA: 0.029, rdKA: 0.057, rdFB: 0.035, rdKB: 0.065, rdVary: 1, rdAxisTilt: 90, rdBlend: 0.25,
+  medium: 0,
 };
 const PKEY = "domeLens.sphere.v1";
 const P: PageSettings = { ...PDEF };
@@ -35,7 +37,7 @@ const saveAll = () => { save(S); try { localStorage.setItem(PKEY, JSON.stringify
 // ---------- 描画 ----------
 const canvas = $<HTMLCanvasElement>("gl");
 let renderer: Renderer;
-try { renderer = new Renderer(canvas, SPHERE_FS, ["uInnerR", "uBx", "uBy", "uBz", "uBallPat", "uWallPat", "uField", "uFieldN"]); }
+try { renderer = new Renderer(canvas, SPHERE_FS, ["uInnerR", "uBx", "uBy", "uBz", "uBallPat", "uWallPat", "uField", "uFieldN", "uMedium"]); }
 catch (e) { hint.textContent = "WebGL2 が使えないため表示できません。"; throw e; }
 
 let W = 0, H = 0;
@@ -140,6 +142,7 @@ function sync() {
   $<HTMLSelectElement>("ballPat").value = String(P.ballPat);
   $<HTMLSelectElement>("wallPat").value = String(P.wallPat);
   $<HTMLSelectElement>("rdRes").value = String(P.rdRes);
+  $<HTMLSelectElement>("medium").value = String(P.medium);
   $<HTMLSelectElement>("rdVary").value = String(P.rdVary);
   $<HTMLSelectElement>("rdPresetA").value = String(presetIndex(P.rdFA, P.rdKA));
   $<HTMLSelectElement>("rdPresetB").value = String(presetIndex(P.rdFB, P.rdKB));
@@ -162,6 +165,7 @@ $<HTMLSelectElement>("rdRes").addEventListener("change", e => {
   P.rdRes = parseInt((e.target as HTMLSelectElement).value, 10); saveAll();
   rd?.resize(P.rdRes);
 });
+$<HTMLSelectElement>("medium").addEventListener("change", e => { P.medium = parseInt((e.target as HTMLSelectElement).value, 10); saveAll(); });
 $<HTMLSelectElement>("rdVary").addEventListener("change", e => { P.rdVary = parseInt((e.target as HTMLSelectElement).value, 10); saveAll(); });
 $("bRdReset").onclick = () => { ensureRD()?.seed(); };
 $<HTMLSelectElement>("wallPat").addEventListener("change", e => { P.wallPat = parseInt((e.target as HTMLSelectElement).value, 10); saveAll(); });
@@ -292,6 +296,7 @@ function frame(now: number) {
     gl.uniform3f(u.uBz, zb.x, zb.y, zb.z);
     gl.uniform1i(u.uBallPat, P.ballPat);
     gl.uniform1i(u.uWallPat, P.wallPat);
+    gl.uniform1i(u.uMedium, P.medium);
     if (field) {
       gl.activeTexture(gl.TEXTURE1);
       gl.bindTexture(gl.TEXTURE_2D, field.texture);

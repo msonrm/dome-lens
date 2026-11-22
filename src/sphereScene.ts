@@ -22,6 +22,8 @@ uniform float uLat, uLon;            // 模様の向き：上に来る緯度、�
 uniform int uBallPat;                // 0 経緯線、1 チェッカー、2 無地（陶器）、3 チューリングパターン
 uniform int uWallPat;                // 0 無地、1 方眼、2 経線（上下端が極）、3 縦横の格子（上下端・左右端が極の経線）
 uniform vec3 uLight;                 // 光の来る向き（端末座標、単位ベクトル）
+uniform int uMedium;                 // 0 液体（ドームと同じ屈折率）、1 空気（ドームのレンズ効果を打ち消す）
+uniform vec3 uEye;                   // 視点（頂点シェーダと共通）
 out vec4 o;
 const float PI = 3.14159265;
 
@@ -76,7 +78,10 @@ vec3 ballColor(vec3 n){
 }
 
 void main(){
-  vec3 rd = normalize(vT);
+  // 液体：屈折後の視線をそのまま中へ進める。
+  // 空気：実物のドームでの屈折は「どの画素に届くか」にだけ効かせ、色を決める視線は目からまっすぐ進める。
+  //       こうすると実物のドームのレンズ効果が打ち消され、薄いガラスの殻の中が空気のように見える
+  vec3 rd = uMedium == 1 ? normalize(vS - uEye) : normalize(vT);
   vec3 ro = vS;
   vec3 C = vec3(0.0, 0.0, uCz);
   vec3 V = -rd;
@@ -122,15 +127,17 @@ void main(){
         float wy = fwidth(latY), wx = fwidth(latX);
         // 光学的な折り返し（コースティック）の付近では像の変化が急で fwidth が跳ね上がり、
         // 偽の太線が出るので、変化が急な所では線を消す
-        float fy = 1.0 - smoothstep(0.6, 1.5, wy), fx = 1.0 - smoothstep(0.6, 1.5, wx);
-        // 液体の球はレンズとして働き、真上から見える内壁は底のまわり ±12° ほどに限られる。
-        // そこで 2° ごとの細線と 10° ごとの太線にする
-        float ly = max(max(lineMask(abs(fract(latY / 2.0 + 0.5) - 0.5) * 2.0, wy) * 0.35,
-                           lineMask(abs(fract(latY / 10.0 + 0.5) - 0.5) * 10.0, wy * 1.4) * 0.75),
+        float fl = uMedium == 1 ? 3.0 : 0.6;
+        float fy = 1.0 - smoothstep(fl, fl * 2.5, wy), fx = 1.0 - smoothstep(fl, fl * 2.5, wx);
+        // 液体の球はレンズとして働き、真上から見える内壁は底のまわり ±12° ほどに限られるので
+        // 2° ごとの細線と 10° ごとの太線。空気なら内壁全体が見えるので 10° と 30°
+        float mi = uMedium == 1 ? 10.0 : 2.0, ma = uMedium == 1 ? 30.0 : 10.0;
+        float ly = max(max(lineMask(abs(fract(latY / mi + 0.5) - 0.5) * mi, wy) * 0.35,
+                           lineMask(abs(fract(latY / ma + 0.5) - 0.5) * ma, wy * 1.4) * 0.75),
                        lineMask(abs(latY), wy * 2.0)) * fy;
         float lx = 0.0;
-        if (uWallPat == 3) lx = max(max(lineMask(abs(fract(latX / 2.0 + 0.5) - 0.5) * 2.0, wx) * 0.35,
-                                        lineMask(abs(fract(latX / 10.0 + 0.5) - 0.5) * 10.0, wx * 1.4) * 0.75),
+        if (uWallPat == 3) lx = max(max(lineMask(abs(fract(latX / mi + 0.5) - 0.5) * mi, wx) * 0.35,
+                                        lineMask(abs(fract(latX / ma + 0.5) - 0.5) * ma, wx * 1.4) * 0.75),
                                     lineMask(abs(latX), wx * 2.0)) * fx;
         wall = mix(vec3(0.90, 0.90, 0.86), vec3(0.30, 0.55, 0.52), max(ly, lx));
       }
@@ -149,7 +156,9 @@ void main(){
     }
   }
   // 液体のわずかな色（通った距離に応じて）
-  float path = hb.x > 0.0 ? hb.x : 2.0 * uR;
-  col *= exp(-vec3(0.010, 0.006, 0.004) * path);
+  if (uMedium == 0) {
+    float path = hb.x > 0.0 ? hb.x : 2.0 * uR;
+    col *= exp(-vec3(0.010, 0.006, 0.004) * path);
+  }
   o = vec4(col, 1.0);
 }`;
