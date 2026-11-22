@@ -231,6 +231,14 @@ function sync() {
   $<HTMLSelectElement>("rdPresetA").value = String(presetIndex(P.rdFA, P.rdKA));
   $<HTMLSelectElement>("rdPresetB").value = String(presetIndex(P.rdFB, P.rdKB));
   toggle("bTilt", tiltOn, "傾きセンサー 動作中", "傾きセンサーを有効にする");
+  // 選んでいる模様とセンサーの状態に関係のある項目だけ見せる
+  const show = (id: string, on: boolean) => { $(id).style.display = on ? "" : "none"; };
+  show("orientPanel", P.ballPat === 0 || P.ballPat === 1 || P.ballPat === 3);
+  show("mirrorPanel", P.ballPat === 4);
+  show("skyPanel", P.ballPat === 5);
+  show("rdPanel", P.ballPat === 3);
+  show("lightNoSensor", !tiltOn);
+  show("lightSensor", tiltOn);
 }
 for (const k of sKeys) $<HTMLInputElement>(k).addEventListener("input", e => {
   S[k] = parseFloat((e.target as HTMLInputElement).value);
@@ -242,10 +250,10 @@ for (const k of pKeys) $<HTMLInputElement>(k).addEventListener("input", e => {
 });
 $<HTMLSelectElement>("n2").addEventListener("change", e => { S.n2 = parseFloat((e.target as HTMLSelectElement).value); saveAll(); });
 $<HTMLSelectElement>("ballPat").addEventListener("change", e => {
-  P.ballPat = parseInt((e.target as HTMLSelectElement).value, 10); saveAll();
+  P.ballPat = parseInt((e.target as HTMLSelectElement).value, 10); saveAll(); sync();
   if (P.ballPat === 3) ($("rdPanel") as HTMLDetailsElement).open = true;
   if (P.ballPat === 5) { ($("skyPanel") as HTMLDetailsElement).open = true; skyDirty = true; }
-  if (P.ballPat === 4) void startCamera(); else stopCamera();
+  if (P.ballPat === 4) { void startCamera(); ($("mirrorPanel") as HTMLDetailsElement).open = true; } else stopCamera();
 });
 $<HTMLSelectElement>("rdRes").addEventListener("change", e => {
   P.rdRes = parseInt((e.target as HTMLSelectElement).value, 10); saveAll();
@@ -262,9 +270,8 @@ $("bTilt").onclick = async () => {
 };
 $("bLightHere").onclick = () => {
   if (!tiltOn || !tilt.active) { hint.textContent = "先に傾きセンサーを有効にしてください。"; return; }
-  // 画面上で「光の方向」（初期値は左上）にあたる向きが、地球上でどの方位かを求めて光の方位にする
-  const a = P.lightAz * Math.PI / 180;
-  P.lightBearing = Math.round(bearingOf({ x: Math.cos(a), y: Math.sin(a), z: 0 }));
+  // スマホの上端が向いている方位を光の方位にする
+  P.lightBearing = Math.round(bearingOf({ x: 0, y: 1, z: 0 }));
   sync(); saveAll();
   hint.textContent = `光の方位を ${P.lightBearing}° にしました。`;
 };
