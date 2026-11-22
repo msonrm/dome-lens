@@ -1,23 +1,51 @@
+// dome-lens：ガラス球
 import "./style.css";
-import { eyeFromAngles, geometry, type Vec3 } from "./optics";
-import { Renderer, type FrameUniforms } from "./renderer";
-type FrameUniformsEyeball = FrameUniforms["eyeball"];
-import { EyeDetector } from "./detector";
-import { IRIS_MM, type FaceObs } from "./face";
-import { OneEuro } from "./filter";
-import { TiltSensor, Bubble } from "./level";
-import { EyeballMotion } from "./eyeball";
-import { DEFAULTS, load, save, type Settings, type EyeMode } from "./settings";
+import { eyeFromAngles, type Vec3 } from "./optics";
+import { Renderer } from "./renderer";
+import { SPHERE_FS } from "./sphereScene";
+import { TiltSensor } from "./level";
+import { load, save, type Settings } from "./settings";
+import { ReactionDiffusion, RD_PRESETS } from "./rd";
+import { computeSky, signText, ASPECTS, type Sky } from "./sky";
 
 const $ = <T extends HTMLElement = HTMLElement>(id: string) => document.getElementById(id) as T;
-
-let S: Settings = load();
 const hint = $("hint");
+
+// ドームの寸法・素材・画面上の位置は表面モードと共通の設定を使う
+const S: Settings = load();
+
+interface PageSettings {
+  ratio: number; ballPat: number; wallPat: number;
+  lat: number; spd: number; lightAz: number; lightElev: number; D: number;
+  lightBearing: number;   // 方位が取れるときの光の方位（北から時計回り、度）
+  followTau: number;      // 端末を水平に回したとき、小球が追いつくまでの時間（秒）
+  // チューリングパターン
+  rdRes: number; rdSteps: number;
+  rdFA: number; rdKA: number; rdFB: number; rdKB: number;
+  rdVary: number; rdAxisTilt: number; rdBlend: number;
+  spread: number;         // 鏡面球の映り込みの広がり
+  camSat: number;         // 映り込む映像の彩度
+  skyMode: "now" | "set"; // 天球：現在時刻か指定日時か
+  skyTime: string;        // 指定日時（日本時間、datetime-local の書式）
+  belowDark: number;      // 地平線より下を暗くする度合い
+}
+const PDEF: PageSettings = {
+  ratio: 0.6, ballPat: 0, wallPat: 1, lat: 35, spd: 6, lightAz: 135, lightElev: 55, D: 300, lightBearing: 315, followTau: 3,
+  rdRes: 192, rdSteps: 12, rdFA: 0.029, rdKA: 0.057, rdFB: 0.035, rdKB: 0.065, rdVary: 1, rdAxisTilt: 90, rdBlend: 0.25,
+  spread: 2.0, camSat: 1.0,
+  skyMode: "now", skyTime: "", belowDark: 0.75,
+};
+const PKEY = "domeLens.sphere.v1";
+const P: PageSettings = { ...PDEF };
+try { Object.assign(P, JSON.parse(localStorage.getItem(PKEY) ?? "{}")); } catch { /* 既定値で動く */ }
+const saveAll = () => { save(S); try { localStorage.setItem(PKEY, JSON.stringify(P)); } catch { /* 無視 */ } };
 
 // ---------- 描画 ----------
 const canvas = $<HTMLCanvasElement>("gl");
 let renderer: Renderer;
-try { renderer = new Renderer(canvas); }
+try { renderer = new Renderer(canvas, SPHERE_FS, ["uInnerR", "uBx", "uBy", "uBz", "uBallPat", "uWallPat", "uField", "uFieldN",
+    "uCam", "uCamOn", "uCamPos", "uCamF", "uCamSize", "uCamFlip", "uFaceZ", "uSpread", "uCamSat",
+    "uBodyDir", "uBodyCol", "uBodySize", "uAspA", "uAspB", "uAspC", "uAspN", "uEc0", "uEc90", "uEcN", "uNcp", "uShadowK", "uBelowDark"]); }
 catch (e) { hint.textContent = "WebGL2 が使えないため表示できません。"; throw e; }
 
 let W = 0, H = 0;
@@ -30,7 +58,7 @@ function resize() {
 window.addEventListener("resize", resize);
 const pxPerMm = () => S.cal!.diam / S.d;
 
-// ---------- 位置合わせ（ドームの縁に円を合わせる） ----------
+// ---------- 位置合わせ ----------
 const ring = $("ring");
 let calMode = false;
 function placeRing() {
@@ -63,157 +91,200 @@ canvas.addEventListener("pointermove", e => {
   }
   last = now;
 });
-const up = (e: PointerEvent) => { pts.delete(e.pointerId); last = pts.size ? snap() : null; save(S); };
+const up = (e: PointerEvent) => { pts.delete(e.pointerId); last = pts.size ? snap() : null; saveAll(); };
 canvas.addEventListener("pointerup", up);
 canvas.addEventListener("pointercancel", up);
 
-// ---------- カメラ追跡 ----------
-const video = $<HTMLVideoElement>("cam");
-const detector = new EyeDetector(video);
-const filt = [new OneEuro(0.6, 0.02), new OneEuro(0.6, 0.02), new OneEuro(0.3, 0.01)];
-let targetEye: Vec3 | null = null;   // 検出ごとに更新される目の位置（フィルタ後）
-let targetMid: Vec3 | null = null;   // 見る人の両目の中点（眼球モードの視線の的）
-const filtMid = [new OneEuro(0.8, 0.03), new OneEuro(0.8, 0.03), new OneEuro(0.4, 0.01)];
-let shownEye: Vec3 | null = null;    // 描画に使う目の位置（毎フレーム targetEye へ滑らかに近づける）
-let lastObs: FaceObs | null = null;
-let trackStatus = "";
-
-/** カメラの観測 → ドーム座標系での視点の位置（mm） */
-function eyesFromObs(o: FaceObs): Record<EyeMode, Vec3> {
-  const fx = S.fxRatio * Math.max(o.w, o.h);
-  const Z = fx * IRIS_MM / o.irisPx;                 // カメラからの奥行き
-  const sx = S.flipX ? 1 : -1;                       // フロントカメラ映像の右 = 画面の左（既定）
-  // カメラ座標（X 画像の右、Y 画像の下、Z 奥）→ ドーム座標
-  const toDome = (X: number, Y: number, Zc: number): Vec3 => ({ x: S.camX + sx * X, y: S.camY - Y, z: S.glass + Zc });
-  const cam = (u: number, v: number) => [(u - o.w / 2) * Z / fx, (v - o.h / 2) * Z / fx, Z];
-  const A = cam(o.eyes[0].u, o.eyes[0].v), B = cam(o.eyes[1].u, o.eyes[1].v);
-  const a = toDome(A[0], A[1], A[2]), b = toDome(B[0], B[1], B[2]);
-  const [left, right] = a.x < b.x ? [a, b] : [b, a]; // 画面に向かって左にある方が左目
-  const M = [(A[0] + B[0]) / 2, (A[1] + B[1]) / 2, (A[2] + B[2]) / 2];
-  const mid = toDome(M[0], M[1], M[2]);
-  // 頭の中心：両目の中点から顔の正面と逆向きに headDepth 下がった点。
-  // 顔を左右に振っても（首を軸に回しても）ほとんど動かない
-  const n = o.normal, k = S.headDepth;
-  const head = toDome(M[0] - n[0] * k, M[1] - n[1] * k, M[2] - n[2] * k);
-  return { mid, left, right, head };
-}
-
-detector.onStatus = st => { trackStatus = st; };
-detector.onObs = (o, t) => {
-  if (!o) { trackStatus = "顔が見つかりません"; return; }
-  trackStatus = "追跡中";
-  lastObs = o;
-  const all = eyesFromObs(o);
-  const e = all[S.eyeMode];
-  const ts = t / 1000;
-  targetEye = { x: filt[0].filter(e.x, ts), y: filt[1].filter(e.y, ts), z: filt[2].filter(e.z, ts) };
-  targetMid = { x: filtMid[0].filter(all.mid.x, ts), y: filtMid[1].filter(all.mid.y, ts), z: filtMid[2].filter(all.mid.z, ts) };
-};
-
-async function startTracking() {
-  try {
-    filt.forEach(f => f.reset()); filtMid.forEach(f => f.reset()); targetEye = null; targetMid = null; shownEye = null;
-    await detector.start();
-    S.track = true;
-  } catch (e) {
-    S.track = false;
-    trackStatus = "カメラを起動できませんでした：" + (e instanceof Error ? e.message : String(e));
-    detector.stop();
-  }
-  syncInputs();
-}
-function stopTracking() {
-  detector.stop(); S.track = false; targetEye = null; shownEye = null; trackStatus = ""; syncInputs();
-}
+// ---------- 傾きセンサー ----------
+const tilt = new TiltSensor();
+let tiltOn = false;
+// 小球の「上」：ゆっくり水平に戻る（重力の向きに遅れて追従）
+let ballUp: Vec3 = { x: 0, y: 0, z: 1 };
 
 // ---------- UI ----------
+type SKey = "d" | "h" | "n" | "gap" | "glass" | "camX" | "camY";
+type PKey = "ratio" | "lat" | "spd" | "lightAz" | "lightElev" | "D" | "lightBearing" | "followTau"
+  | "rdSteps" | "rdFA" | "rdKA" | "rdFB" | "rdKB" | "rdAxisTilt" | "rdBlend" | "spread" | "camSat" | "belowDark";
 const units: Record<string, string> = {
-  d: "mm", h: "mm", n: "", gap: "mm", glass: "mm", D: "mm", tilt: "°", az: "°", lat: "°", spd: "°/s",
-  camX: "mm", camY: "mm", calibD: "mm", gain: "×", headDepth: "mm", levelGain: "×",
-  beamBearing: "°", beamElev: "°", northOffset: "°", pupil: "", lightAz: "°", lightElev: "°",
+  d: "mm", h: "mm", n: "", gap: "mm", glass: "mm", camX: "mm", camY: "mm",
+  ratio: "×", lat: "°", spd: "°/s", lightAz: "°", lightElev: "°", D: "mm", lightBearing: "°", followTau: "秒",
+  rdSteps: "/フレーム", rdFA: "", rdKA: "", rdFB: "", rdKB: "", rdAxisTilt: "°", rdBlend: "", spread: "×", camSat: "", belowDark: "",
 };
-type NumKey = "d" | "h" | "n" | "gap" | "glass" | "D" | "tilt" | "az" | "lat" | "spd" | "camX" | "camY" | "calibD" | "gain" | "headDepth" | "levelGain" | "beamBearing" | "beamElev" | "northOffset" | "pupil" | "lightAz" | "lightElev";
+const sKeys: SKey[] = ["d", "h", "n", "gap", "glass", "camX", "camY"];
+// カメラの画角（長辺、度）⇔ 焦点距離の比（焦点距離 ÷ 映像の長辺）
+const fovToRatio = (deg: number) => 0.5 / Math.tan(deg * Math.PI / 360);
+const ratioToFov = (r: number) => Math.round(360 / Math.PI * Math.atan(0.5 / r));
+const pKeys: PKey[] = ["ratio", "lat", "spd", "lightAz", "lightElev", "D", "lightBearing", "followTau",
+  "rdSteps", "rdFA", "rdKA", "rdFB", "rdKB", "rdAxisTilt", "rdBlend", "spread", "camSat", "belowDark"];
+const fmt = (k: string, v: number) =>
+  (k === "n" || k === "ratio" || k === "rdBlend" || k === "spread" || k === "camSat" || k === "belowDark" ? v.toFixed(2) : k.startsWith("rdF") || k.startsWith("rdK") ? v.toFixed(4) : String(v)) + units[k];
 
-function fmt(k: string, v: number) { return (k === "n" || k === "gain" || k === "pupil" ? v.toFixed(2) : String(v)) + units[k]; }
-
-// ---------- 水準器 ----------
-const tiltSensor = new TiltSensor();
-const bubble = new Bubble();
-let tiltOn = false;
-let zero1: { x: number; y: number } | null = null;
-/** ゼロ点を差し引いた傾き（上向きベクトルの水平成分） */
-function tiltNow() { return { x: tiltSensor.up.x - S.levelBias.x, y: tiltSensor.up.y - S.levelBias.y }; }
-
-/** 端末の座標系のベクトルが地球上でどの方位（北から時計回り、度）を向いているか（補正前） */
-function deviceToEarthBearing(v: Vec3): number {
-  // toDevice の逆を数値で求める代わりに、東・北の単位ベクトルを端末座標に写して内積をとる
-  const e = tiltSensor.toDevice({ x: 1, y: 0, z: 0 }), n = tiltSensor.toDevice({ x: 0, y: 1, z: 0 });
-  const ve = v.x * e.x + v.y * e.y + v.z * e.z, vn = v.x * n.x + v.y * n.y + v.z * n.z;
-  return (Math.atan2(ve, vn) * 180 / Math.PI + 360) % 360;
+// ---------- 鏡面球に映すインカメラの映像 ----------
+const camVideo = document.createElement("video");
+camVideo.muted = true; camVideo.playsInline = true;
+let camStream: MediaStream | null = null;
+let camTex: WebGLTexture | null = null;
+async function startCamera() {
+  if (camStream) return;
+  try {
+    camStream = await navigator.mediaDevices.getUserMedia({
+      video: { facingMode: "user", width: { ideal: 640 }, height: { ideal: 480 } }, audio: false,
+    });
+    camVideo.srcObject = camStream;
+    await camVideo.play();
+  } catch (e) {
+    camStream = null;
+    hint.textContent = "カメラを起動できませんでした：" + (e instanceof Error ? e.message : String(e));
+  }
+}
+function stopCamera() {
+  camStream?.getTracks().forEach(t => t.stop());
+  camStream = null; camVideo.srcObject = null;
+}
+/** 最新の映像フレームをテクスチャに送る。映像がなければ false */
+function updateCamTexture(gl: WebGL2RenderingContext): boolean {
+  if (!camStream || camVideo.readyState < 2) return false;
+  if (!camTex) {
+    camTex = gl.createTexture()!;
+    gl.bindTexture(gl.TEXTURE_2D, camTex);
+    // 画角の外は鏡映しで繰り返し、ミップマップでぼかして読む
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR_MIPMAP_LINEAR);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.MIRRORED_REPEAT);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.MIRRORED_REPEAT);
+  }
+  gl.activeTexture(gl.TEXTURE2);
+  gl.bindTexture(gl.TEXTURE_2D, camTex);
+  gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, false);
+  gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, camVideo);
+  gl.generateMipmap(gl.TEXTURE_2D);
+  gl.activeTexture(gl.TEXTURE0);
+  return true;
 }
 
-/** 光の指針の向き（ドーム座標）と、石から表面までの長さ */
-function beamNow(): { dir: Vec3; len: number } | null {
-  const B = (S.beamBearing - S.northOffset) * Math.PI / 180, el = S.beamElev * Math.PI / 180;
-  const earth = { x: Math.sin(B) * Math.cos(el), y: Math.cos(B) * Math.cos(el), z: Math.sin(el) };
-  // センサーがなければ「端末を水平に置き、上端が北」とみなす
-  const d = tiltSensor.active ? tiltSensor.toDevice(earth) : earth;
-  const g = geometry(S);
-  const O = { x: 0, y: 0, z: g.zb + 0.8 };
-  // 石から球面までの距離：|O + t·d − C| = R を解く
-  const oc = { x: O.x, y: O.y, z: O.z - g.cz };
-  const bq = oc.x * d.x + oc.y * d.y + oc.z * d.z;
-  const cq = oc.x * oc.x + oc.y * oc.y + oc.z * oc.z - g.R * g.R;
-  const disc = bq * bq - cq;
-  if (disc < 0) return null;
-  const t = -bq + Math.sqrt(disc);
-  const hitZ = O.z + t * d.z;
-  if (t <= 0 || hitZ < g.zb) return null;            // 底面より下に向いている（画面に潜る）
-  return { dir: d, len: t };
+// ---------- 天球 ----------
+let sky: Sky | null = null;
+let skyAt = 0;
+let skyDirty = true;
+/** 日本時間の "YYYY-MM-DDTHH:MM" ⇔ Date */
+const jstToDate = (v: string) => new Date(v + ":00+09:00");
+function dateToJst(d: Date) {
+  const j = new Date(d.getTime() + 9 * 3600 * 1000);
+  return j.toISOString().slice(0, 16);
 }
+function skyDate(): Date {
+  if (P.skyMode === "set" && P.skyTime) { const d = jstToDate(P.skyTime); if (!isNaN(d.getTime())) return d; }
+  return new Date();
+}
+function updateSkyInfo(d: Date) {
+  if (!sky) return;
+  const when = `${dateToJst(d).replace("T", " ")}（日本時間）${P.skyMode === "now" ? " 現在" : ""}`;
+  const bodies = sky.bodies.map(b => `${b.name.padEnd(2, "　")} ${signText(b.lon)}　高度 ${b.alt >= 0 ? " " : ""}${b.alt.toFixed(0)}°`).join("\n");
+  const asp = [...sky.aspects].sort((a, b) => a.diff - b.diff)
+    .map(a => `${sky!.bodies[a.a].name}–${sky!.bodies[a.b].name} ${a.kind}（ずれ ${a.diff.toFixed(1)}°）`).join("\n");
+  $("skyInfo").textContent = `${when}\n\n${bodies}\n\nアスペクト\n${asp || "なし"}`;
+}
+$<HTMLSelectElement>("skyMode").addEventListener("change", e => {
+  P.skyMode = (e.target as HTMLSelectElement).value as "now" | "set";
+  if (P.skyMode === "set" && !P.skyTime) P.skyTime = dateToJst(new Date());
+  skyDirty = true; sync(); saveAll();
+});
+$<HTMLInputElement>("skyTime").addEventListener("input", e => {
+  P.skyTime = (e.target as HTMLInputElement).value; P.skyMode = "set"; skyDirty = true; sync(); saveAll();
+});
+$("bSkyNow").onclick = () => { P.skyMode = "now"; skyDirty = true; sync(); saveAll(); };
+
+// ---------- チューリングパターン ----------
+let rd: ReactionDiffusion | null = null;
+function ensureRD(): ReactionDiffusion | null {
+  if (rd) return rd;
+  try { rd = new ReactionDiffusion(renderer.context, P.rdRes); }
+  catch (e) { hint.textContent = "チューリングパターンを計算できません：" + (e instanceof Error ? e.message : String(e)); }
+  return rd;
+}
+for (const id of ["rdPresetA", "rdPresetB"]) {
+  const sel = $<HTMLSelectElement>(id);
+  sel.innerHTML = `<option value="-1">カスタム（スライダーの値）</option>` + RD_PRESETS.map((p, i) => `<option value="${i}">${p.name}（${p.f} / ${p.k}）</option>`).join("");
+  sel.addEventListener("change", () => {
+    const i = parseInt(sel.value, 10); if (i < 0) return;
+    const pr = RD_PRESETS[i];
+    if (id === "rdPresetA") { P.rdFA = pr.f; P.rdKA = pr.k; } else { P.rdFB = pr.f; P.rdKB = pr.k; }
+    sync(); saveAll();
+  });
+}
+/** 今の供給率・除去率に一致するプリセットの番号（なければ -1 ＝カスタム） */
+function presetIndex(f: number, k: number) {
+  return RD_PRESETS.findIndex(p => Math.abs(p.f - f) < 1e-6 && Math.abs(p.k - k) < 1e-6);
+}
+// 模様が消えていたら種を足して立て直す（パラメータによっては模様が全滅するため）
+let probeAt = 0;
 function toggle(id: string, on: boolean, onText: string, offText: string) {
   const b = $(id); b.classList.toggle("on", on); b.textContent = on ? onText : offText;
 }
-function syncInputs() {
-  for (const k of Object.keys(units) as NumKey[]) {
-    const el = $<HTMLInputElement>(k); el.value = String(S[k]);
-    el.parentElement!.querySelector("output")!.textContent = fmt(k, S[k]);
-  }
+function sync() {
+  for (const k of sKeys) { const el = $<HTMLInputElement>(k); el.value = String(S[k]); el.parentElement!.querySelector("output")!.textContent = fmt(k, S[k]); }
+  for (const k of pKeys) { const el = $<HTMLInputElement>(k); el.value = String(P[k]); el.parentElement!.querySelector("output")!.textContent = fmt(k, P[k]); }
   $<HTMLSelectElement>("n2").value = String(S.n2);
-  $<HTMLSelectElement>("pattern").value = String(S.pattern);
-  $<HTMLSelectElement>("eyeMode").value = S.eyeMode;
-  toggle("bCorr", S.corr, "補正 ON", "補正 OFF");
-  toggle("bSpin", S.spin, "自転 ON", "自転 OFF");
-  toggle("bTrack", S.track, "追跡を停止", "追跡を開始");
-  toggle("bFlip", S.flipX, "左右反転 ON", "左右反転 OFF");
-  toggle("bDot", S.showDot, "目のマーカー ON", "目のマーカー OFF");
-  toggle("bCamView", S.showCam, "カメラ映像 ON", "カメラ映像 OFF");
+  $<HTMLSelectElement>("ballPat").value = String(P.ballPat);
+  $<HTMLSelectElement>("wallPat").value = String(P.wallPat);
+  $<HTMLSelectElement>("rdRes").value = String(P.rdRes);
+  $<HTMLSelectElement>("skyMode").value = P.skyMode;
+  $<HTMLInputElement>("skyTime").value = P.skyMode === "set" ? P.skyTime : dateToJst(new Date());
+  $<HTMLSelectElement>("rdVary").value = String(P.rdVary);
+  $<HTMLSelectElement>("rdPresetA").value = String(presetIndex(P.rdFA, P.rdKA));
+  $<HTMLSelectElement>("rdPresetB").value = String(presetIndex(P.rdFB, P.rdKB));
   toggle("bTilt", tiltOn, "傾きセンサー 動作中", "傾きセンサーを有効にする");
-  toggle("bBubbleAll", S.bubbleAll, "他の模様にも気泡 ON", "他の模様にも気泡 OFF");
-  toggle("bLids", S.lids, "まぶた ON", "まぶた OFF");
-  toggle("bFloor", S.floor, "床と影 ON", "床と影 OFF");
-  toggle("bShade", S.shade, "ドームの陰影 ON", "ドームの陰影 OFF");
-  $<HTMLSelectElement>("irisType").value = String(S.irisType);
-  video.style.display = S.track && S.showCam ? "block" : "none";
+  toggle("bFlip", S.flipX, "左右反転 ON", "左右反転 OFF");
+  $<HTMLInputElement>("camFov").value = String(ratioToFov(S.fxRatio));
+  $("camFov").parentElement!.querySelector("output")!.textContent = ratioToFov(S.fxRatio) + "°";
+  // 選んでいる模様とセンサーの状態に関係のある項目だけ見せる
+  const show = (id: string, on: boolean) => { $(id).style.display = on ? "" : "none"; };
+  show("orientPanel", P.ballPat === 0 || P.ballPat === 1 || P.ballPat === 3);
+  show("mirrorPanel", P.ballPat === 4);
+  show("skyPanel", P.ballPat === 5);
+  show("rdPanel", P.ballPat === 3);
+  show("lightNoSensor", !tiltOn);
+  show("lightSensor", tiltOn);
 }
-for (const k of Object.keys(units) as NumKey[]) {
-  $<HTMLInputElement>(k).addEventListener("input", e => {
-    S[k] = parseFloat((e.target as HTMLInputElement).value);
-    if ((k === "d" || k === "h") && S.h > S.d / 2) S.h = S.d / 2;
-    syncInputs();
-    save(S);
-  });
-}
-$<HTMLSelectElement>("n2").addEventListener("change", e => { S.n2 = parseFloat((e.target as HTMLSelectElement).value); save(S); });
-$<HTMLSelectElement>("pattern").addEventListener("change", e => { S.pattern = parseInt((e.target as HTMLSelectElement).value, 10); save(S); });
-$<HTMLSelectElement>("eyeMode").addEventListener("change", e => { S.eyeMode = (e.target as HTMLSelectElement).value as EyeMode; filt.forEach(f => f.reset()); save(S); });
-$("bCorr").onclick = () => { S.corr = !S.corr; syncInputs(); save(S); };
-$("bSpin").onclick = () => { S.spin = !S.spin; syncInputs(); save(S); };
-$("bTrack").onclick = () => { if (S.track) stopTracking(); else void startTracking(); };
-$("bFlip").onclick = () => { S.flipX = !S.flipX; filt.forEach(f => f.reset()); syncInputs(); save(S); };
-$("bDot").onclick = () => { S.showDot = !S.showDot; syncInputs(); save(S); };
-$("bCamView").onclick = () => { S.showCam = !S.showCam; syncInputs(); save(S); };
+for (const k of sKeys) $<HTMLInputElement>(k).addEventListener("input", e => {
+  S[k] = parseFloat((e.target as HTMLInputElement).value);
+  if (S.h > S.d / 2) S.h = S.d / 2;
+  sync(); saveAll();
+});
+for (const k of pKeys) $<HTMLInputElement>(k).addEventListener("input", e => {
+  P[k] = parseFloat((e.target as HTMLInputElement).value); sync(); saveAll();
+});
+$<HTMLSelectElement>("n2").addEventListener("change", e => { S.n2 = parseFloat((e.target as HTMLSelectElement).value); saveAll(); });
+$<HTMLSelectElement>("ballPat").addEventListener("change", e => {
+  P.ballPat = parseInt((e.target as HTMLSelectElement).value, 10); saveAll(); sync();
+  if (P.ballPat === 3) ($("rdPanel") as HTMLDetailsElement).open = true;
+  if (P.ballPat === 5) { ($("skyPanel") as HTMLDetailsElement).open = true; skyDirty = true; }
+  if (P.ballPat === 4) { void startCamera(); ($("mirrorPanel") as HTMLDetailsElement).open = true; } else stopCamera();
+});
+$<HTMLSelectElement>("rdRes").addEventListener("change", e => {
+  P.rdRes = parseInt((e.target as HTMLSelectElement).value, 10); saveAll();
+  rd?.resize(P.rdRes);
+});
+$<HTMLSelectElement>("rdVary").addEventListener("change", e => { P.rdVary = parseInt((e.target as HTMLSelectElement).value, 10); saveAll(); });
+$("bRdReset").onclick = () => { ensureRD()?.seed(); };
+$<HTMLSelectElement>("wallPat").addEventListener("change", e => { P.wallPat = parseInt((e.target as HTMLSelectElement).value, 10); saveAll(); });
+$<HTMLInputElement>("camFov").addEventListener("input", e => {
+  S.fxRatio = fovToRatio(parseFloat((e.target as HTMLInputElement).value)); sync(); saveAll();
+});
+$("bFlip").onclick = () => { S.flipX = !S.flipX; sync(); saveAll(); };
 $("bCal").onclick = () => { calMode = !calMode; $("bCal").classList.toggle("on", calMode); placeRing(); };
+$("bTilt").onclick = async () => {
+  if (tiltOn) { tilt.stop(); tiltOn = false; sync(); return; }
+  try { await tilt.start(); tiltOn = true; } catch (e) { hint.textContent = e instanceof Error ? e.message : String(e); }
+  sync();
+};
+$("bLightHere").onclick = () => {
+  if (!tiltOn || !tilt.active) { hint.textContent = "先に傾きセンサーを有効にしてください。"; return; }
+  // スマホの上端が向いている方位を光の方位にする
+  P.lightBearing = Math.round(bearingOf({ x: 0, y: 1, z: 0 }));
+  sync(); saveAll();
+  hint.textContent = `光の方位を ${P.lightBearing}° にしました。`;
+};
 $("bHide").onclick = () => {
   calMode = false; $("bCal").classList.remove("on"); placeRing();
   $("ui").classList.add("hidden"); $("show").style.display = "block";
@@ -225,77 +296,6 @@ $("bFull").onclick = async () => {
     else await document.documentElement.requestFullscreen({ navigationUI: "hide" });
   } catch { hint.textContent = "全画面にできませんでした。"; }
 };
-$("bCamEst").onclick = () => {
-  if (!document.fullscreenElement || !S.cal) { hint.textContent = "全画面にしてから押してください（画面上端＝本体の画面上端として推定します）。"; return; }
-  // フロントカメラは画面上端の中央、上端から約4mm下にあると仮定
-  S.camX = Math.round((W / 2 - S.cal.cx) / pxPerMm() * 2) / 2;
-  S.camY = Math.round((S.cal.cy / pxPerMm() + 4) * 2) / 2;
-  hint.textContent = `カメラ位置を 横${S.camX}mm・縦${S.camY}mm と推定しました。定規で確かめて微調整してください。`;
-  syncInputs(); save(S);
-};
-$("bCalib").onclick = () => {
-  if (!lastObs) { hint.textContent = "顔が検出されていません。追跡を開始し、カメラに顔を向けてください。"; return; }
-  const Z = S.calibD - S.glass;
-  S.fxRatio = Z * lastObs.irisPx / IRIS_MM / Math.max(lastObs.w, lastObs.h);
-  filt.forEach(f => f.reset());
-  hint.textContent = `距離を校正しました（係数 ${S.fxRatio.toFixed(3)}）。`;
-  save(S);
-};
-$("bTilt").onclick = async () => {
-  if (tiltOn) { tiltSensor.stop(); tiltOn = false; syncInputs(); return; }
-  try { await tiltSensor.start(); tiltOn = true; if (S.pattern !== 4 && !S.bubbleAll) { S.pattern = 4; save(S); } }
-  catch (e) { hint.textContent = e instanceof Error ? e.message : String(e); }
-  syncInputs();
-};
-$("bBubbleAll").onclick = () => { S.bubbleAll = !S.bubbleAll; syncInputs(); save(S); };
-$("bZero1").onclick = () => {
-  if (!tiltSensor.active) { hint.textContent = "先に傾きセンサーを有効にしてください。"; return; }
-  zero1 = { x: tiltSensor.up.x, y: tiltSensor.up.y };
-  hint.textContent = "1回目を記録しました。同じ場所でスマホを 180° 回して「2回目」を押してください。";
-};
-$("bZero2").onclick = () => {
-  if (!zero1) { hint.textContent = "先に 1回目を押してください。"; return; }
-  // 置いた面の傾きは 180° 回すと端末から見て逆向きになり、センサーのずれは変わらない。
-  // 2回の平均がセンサーのずれ
-  S.levelBias = { x: (zero1.x + tiltSensor.up.x) / 2, y: (zero1.y + tiltSensor.up.y) / 2 };
-  zero1 = null; save(S);
-  hint.textContent = `ゼロ点を合わせました（ずれ ${(Math.hypot(S.levelBias.x, S.levelBias.y) * 180 / Math.PI).toFixed(2)}°）。`;
-};
-$("bZeroReset").onclick = () => { S.levelBias = { x: 0, y: 0 }; zero1 = null; save(S); hint.textContent = "ゼロ点を初期状態に戻しました。"; };
-$<HTMLSelectElement>("irisType").addEventListener("change", e => { S.irisType = parseInt((e.target as HTMLSelectElement).value, 10); save(S); });
-$("bLids").onclick = () => { S.lids = !S.lids; syncInputs(); save(S); };
-$("bFloor").onclick = () => { S.floor = !S.floor; syncInputs(); save(S); };
-$("bShade").onclick = () => { S.shade = !S.shade; syncInputs(); save(S); };
-$("bNorthHere").onclick = () => {
-  if (!tiltSensor.active) { hint.textContent = "先に「水準器」欄で傾きセンサーを有効にしてください。"; return; }
-  // 今の端末上端の水平な向きが「北」になるよう補正する
-  const top = deviceToEarthBearing({ x: 0, y: 1, z: 0 });
-  S.northOffset = Math.round(((-top + 540) % 360) - 180);
-  syncInputs(); save(S);
-  hint.textContent = `方位の補正を ${S.northOffset}° にしました。`;
-};
-$("bImg").onclick = () => $("file").click();
-$<HTMLInputElement>("file").addEventListener("change", e => {
-  const f = (e.target as HTMLInputElement).files?.[0]; if (!f) return;
-  const img = new Image();
-  img.onload = () => {
-    const c = document.createElement("canvas");
-    const w = Math.min(4096, img.width), h = Math.round(w / 2);
-    c.width = w; c.height = h;
-    c.getContext("2d")!.drawImage(img, 0, 0, w, h);
-    renderer.setImage(c);
-    S.pattern = 3; syncInputs(); save(S);
-    URL.revokeObjectURL(img.src);
-  };
-  img.src = URL.createObjectURL(f);
-});
-$("bReset").onclick = () => {
-  const cal = S.cal, track = S.track;
-  S = { ...DEFAULTS, cal, track };
-  syncInputs(); save(S);
-};
-
-// 画面が消えないように（使えない環境では何もしない）
 async function keepAwake() {
   try { if ("wakeLock" in navigator) await navigator.wakeLock.request("screen"); } catch { /* 無視 */ }
 }
@@ -303,92 +303,159 @@ document.addEventListener("visibilitychange", () => { if (document.visibilitySta
 void keepAwake();
 
 // ---------- 描画ループ ----------
-const dot = $("dot"), hud = $("hud");
-const eyeball = new EyeballMotion();
+const norm = (v: Vec3): Vec3 => { const l = Math.hypot(v.x, v.y, v.z) || 1; return { x: v.x / l, y: v.y / l, z: v.z / l }; };
+const cross = (a: Vec3, b: Vec3): Vec3 => ({ x: a.y * b.z - a.z * b.y, y: a.z * b.x - a.x * b.z, z: a.x * b.y - a.y * b.x });
+const dot = (a: Vec3, b: Vec3) => a.x * b.x + a.y * b.y + a.z * b.z;
+
+/** 端末座標のベクトルが地球上でどの方位を向いているか（北から時計回り、度） */
+function bearingOf(v: Vec3): number {
+  const e = tilt.toDevice({ x: 1, y: 0, z: 0 }), n = tilt.toDevice({ x: 0, y: 1, z: 0 });
+  return (Math.atan2(dot(v, e), dot(v, n)) * 180 / Math.PI + 360) % 360;
+}
+/** v から axis 方向の成分を除いて正規化（直交化） */
+function orthoTo(v: Vec3, axis: Vec3): Vec3 {
+  const k = dot(v, axis);
+  return norm({ x: v.x - axis.x * k, y: v.y - axis.y * k, z: v.z - axis.z * k });
+}
+
+// 小球の水平方向の向き（x 軸の方位、度）。端末を回すと、その場に留まってからゆっくり追いつく
+let ballHeading: number | null = null;
+// 光の向き（端末座標）。方位センサーの細かい揺れを抑えるために平滑化する
+let lightSm: Vec3 | null = null;
+const hud = $("hud");
 let lon = 139.7 * Math.PI / 180, prev = performance.now(), hudAt = 0;
 let frames = 0, fps = 0, fpsAt = performance.now();
 
-function currentEye(dt: number): Vec3 {
-  if (S.track && targetEye) {
-    if (!shownEye) shownEye = { ...targetEye };
-    const a = 1 - Math.exp(-dt / 0.06);              // 約60msで追いつく
-    shownEye.x += (targetEye.x - shownEye.x) * a;
-    shownEye.y += (targetEye.y - shownEye.y) * a;
-    shownEye.z += (targetEye.z - shownEye.z) * a;
-    // 感度：ドーム中心から見た横方向のずれを拡大・縮小する（1.0 が物理的に正しい値）
-    return { x: shownEye.x * S.gain, y: shownEye.y * S.gain, z: shownEye.z };
-  }
-  return eyeFromAngles(S, S.D, S.tilt, S.az);
-}
-
 function frame(now: number) {
   const dt = Math.min(0.1, (now - prev) / 1000); prev = now;
-  if (S.spin) lon += S.spd * Math.PI / 180 * dt;
+  lon += P.spd * Math.PI / 180 * dt;
   frames++;
   if (now - fpsAt > 1000) { fps = frames * 1000 / (now - fpsAt); frames = 0; fpsAt = now; }
 
-  if (S.track) detector.tick(now);
-  const E = currentEye(dt);
+  // 重力の「上」（センサーがなければ画面に垂直）。小球は約 0.3 秒の遅れで追従
+  const target = tiltOn && tilt.active ? norm(tilt.up) : { x: 0, y: 0, z: 1 };
+  const a = 1 - Math.exp(-dt / 0.3);
+  ballUp = norm({ x: ballUp.x + (target.x - ballUp.x) * a, y: ballUp.y + (target.y - ballUp.y) * a, z: ballUp.z + (target.z - ballUp.z) * a });
+  const sensing = tiltOn && tilt.active;
+  const zb = ballUp;
+  let xb: Vec3;
+  let lightTarget: Vec3;
+  const le = P.lightElev * Math.PI / 180;
+  if (sensing) {
+    // 小球の向き：端末の x 軸の方位に、時定数 followTau で遅れて追いつく
+    const devHeading = bearingOf(orthoTo({ x: 1, y: 0, z: 0 }, target));
+    if (ballHeading === null) ballHeading = devHeading;
+    // 天球では小球の x 軸を東に固定する（地平座標にそろえる）。それ以外は端末の向きに遅れて追いつく
+    const goal = P.ballPat === 5 ? 90 : devHeading;
+    const diff = ((goal - ballHeading + 540) % 360) - 180;
+    ballHeading = (ballHeading + diff * (1 - Math.exp(-dt / Math.max(0.05, P.followTau))) + 360) % 360;
+    const hb = ballHeading * Math.PI / 180;
+    xb = orthoTo(tilt.toDevice({ x: Math.sin(hb), y: Math.cos(hb), z: 0 }), zb);
+    // 光：部屋に固定（方位 lightBearing、高さ lightElev）
+    const B = P.lightBearing * Math.PI / 180;
+    lightTarget = norm(tilt.toDevice({ x: Math.sin(B) * Math.cos(le), y: Math.cos(B) * Math.cos(le), z: Math.sin(le) }));
+  } else {
+    // センサーなし：端末を水平に置いた前提。光は画面上の方向（初期値は左上）から
+    ballHeading = null;
+    xb = orthoTo({ x: 1, y: 0, z: 0 }, zb);
+    const la = P.lightAz * Math.PI / 180;
+    lightTarget = { x: Math.cos(le) * Math.cos(la), y: Math.cos(le) * Math.sin(la), z: Math.sin(le) };
+  }
+  const yb = cross(zb, xb);
+  if (!lightSm) lightSm = lightTarget;
+  const al = 1 - Math.exp(-dt / 0.15);
+  lightSm = norm({ x: lightSm.x + (lightTarget.x - lightSm.x) * al, y: lightSm.y + (lightTarget.y - lightSm.y) * al, z: lightSm.z + (lightTarget.z - lightSm.z) * al });
+  const light = lightSm;
 
-  // 気泡：上向きベクトルの水平成分（傾き）の方向へ、傾き×感度の角度だけ頂点からずれる
-  let bubbleU: { dir: Vec3; rad: number } | null = null;
-  const levelGain = S.pattern === 4 ? S.levelGain : 1;   // 他の模様では本物の気泡と同じ動き
-  if (tiltOn && tiltSensor.active && (S.pattern === 4 || S.bubbleAll)) {
-    const t = tiltNow();
-    const tilt = Math.asin(Math.min(1, Math.hypot(t.x, t.y)));
-    const g = geometry(S);
-    const rad = 9 * Math.PI / 180;
-    const pol = Math.min(tilt * levelGain, Math.max(0, g.amax - rad * 1.2));
-    const az = Math.atan2(t.y, t.x);
-    bubble.step(pol * Math.cos(az), pol * Math.sin(az), dt);
-    const p = Math.hypot(bubble.x, bubble.y), a = Math.atan2(bubble.y, bubble.x);
-    bubbleU = { dir: { x: Math.sin(p) * Math.cos(a), y: Math.sin(p) * Math.sin(a), z: Math.cos(p) }, rad };
+  // チューリングパターンを進める（小球に固定した座標で計算）
+  let field: ReactionDiffusion | null = null;
+  if (P.ballPat === 3) {
+    field = ensureRD();
+    if (field && P.rdSteps > 0) {
+      const t = P.rdAxisTilt * Math.PI / 180;
+      field.step(Math.round(P.rdSteps), {
+        a: [P.rdFA, P.rdKA], b: [P.rdFB, P.rdKB],
+        axis: [Math.sin(t), 0, Math.cos(t)],
+        blend: P.rdVary ? P.rdBlend : 0,
+      });
+      if (now - probeAt > 1500) {
+        probeAt = now;
+        if (field.maxV() < 0.04) field.sprinkle();
+      }
+    }
   }
 
-  // 眼球：眼球（ドームの球）の中心から見た、見る人の目の方向を向く
-  let eyeballU: FrameUniformsEyeball = null;
-  if (S.pattern === 6) {
-    const g = geometry(S);
-    const V = S.track && targetMid ? targetMid : E;
-    eyeball.update({ x: V.x, y: V.y, z: V.z - g.cz }, dt, 45 * Math.PI / 180);
-    eyeballU = { gaze: eyeball.gaze, pupil: S.pupil, irisType: S.irisType, lidOpen: eyeball.lidOpen, lids: S.lids };
+  // 天球：現在時刻なら1秒ごと、指定日時なら変更時に計算し直す
+  if (P.ballPat === 5 && (skyDirty || (P.skyMode === "now" && now - skyAt > 1000))) {
+    const d = skyDate();
+    try { sky = computeSky(d); updateSkyInfo(d); } catch (e) { hint.textContent = "天体の計算に失敗しました：" + String(e); }
+    skyAt = now; skyDirty = false;
   }
 
-  const ppm = pxPerMm();
-  const la = S.lightAz * Math.PI / 180, le = S.lightElev * Math.PI / 180;
+  const E = eyeFromAngles(S, P.D, 0, 0);   // 画面に正対した固定の視点
+  const R = (S.d * S.d / 4 + Math.min(S.h, S.d / 2) ** 2) / (2 * Math.min(S.h, S.d / 2));
   renderer.draw({
-    light: { x: Math.cos(le) * Math.cos(la), y: Math.cos(le) * Math.sin(la), z: Math.sin(le) },
-    floor: S.floor, shade: S.shade,
-    eyeball: eyeballU,
-    bubble: bubbleU, ringScale: S.levelGain,
-    time: now / 1000, beam: S.pattern === 5 ? beamNow() : null,
-    optics: S, eye: E, corrected: S.corr,
-    centerPx: [S.cal!.cx, S.cal!.cy], pxPerMm: ppm, sizePx: [W, H],
-    lat: S.lat * Math.PI / 180, lon, pattern: S.pattern,
+    optics: S, eye: E, corrected: true,
+    centerPx: [S.cal!.cx, S.cal!.cy], pxPerMm: pxPerMm(), sizePx: [W, H],
+    lat: P.lat * Math.PI / 180, lon,
+    light,
+  }, (gl, u) => {
+    gl.uniform1f(u.uInnerR, R * P.ratio);
+    gl.uniform3f(u.uBx, xb.x, xb.y, xb.z);
+    gl.uniform3f(u.uBy, yb.x, yb.y, yb.z);
+    gl.uniform3f(u.uBz, zb.x, zb.y, zb.z);
+    gl.uniform1i(u.uBallPat, P.ballPat);
+    gl.uniform1i(u.uWallPat, P.wallPat);
+    gl.uniform1f(u.uShadowK, P.ballPat === 5 ? 0.3 : 1.0);   // 天球は半透明なので影は薄く
+    if (P.ballPat === 5 && sky) {
+      const flat = (vs: number[][]) => new Float32Array(vs.flat());
+      gl.uniform3fv(u.uBodyDir, flat(sky.bodies.map(b => b.dir)));
+      gl.uniform3fv(u.uBodyCol, flat(sky.bodies.map(b => b.color)));
+      gl.uniform1fv(u.uBodySize, new Float32Array(sky.bodies.map(b => b.size)));
+      const asp = sky.aspects.slice(0, 21);
+      const pad = (a: number[][], n: number) => { while (a.length < n) a.push([0, 0, 0]); return a; };
+      gl.uniform3fv(u.uAspA, flat(pad(asp.map(a => sky!.bodies[a.a].dir), 21)));
+      gl.uniform3fv(u.uAspB, flat(pad(asp.map(a => sky!.bodies[a.b].dir), 21)));
+      const cols = asp.map(a => { const c = ASPECTS.find(x => x.kind === a.kind)!.color; return [c[0], c[1], c[2], a.exactness]; });
+      while (cols.length < 21) cols.push([0, 0, 0, 0]);
+      gl.uniform4fv(u.uAspC, new Float32Array(cols.flat()));
+      gl.uniform1i(u.uAspN, asp.length);
+      gl.uniform1f(u.uBelowDark, P.belowDark);
+      gl.uniform3fv(u.uEc0, sky.ec0); gl.uniform3fv(u.uEc90, sky.ec90);
+      gl.uniform3fv(u.uEcN, sky.ecN); gl.uniform3fv(u.uNcp, sky.ncp);
+    }
+    // 鏡面球：カメラ位置・画角・左右の向きは表面モードの設定を使う
+    const camOn = P.ballPat === 4 && updateCamTexture(gl);
+    gl.uniform1i(u.uCamOn, camOn ? 1 : 0);
+    gl.uniform1i(u.uCam, 2);
+    if (camOn) {
+      const w = camVideo.videoWidth, h = camVideo.videoHeight;
+      gl.uniform3f(u.uCamPos, S.camX, S.camY, S.glass);
+      gl.uniform1f(u.uCamF, S.fxRatio * Math.max(w, h));
+      gl.uniform2f(u.uCamSize, w, h);
+      gl.uniform1f(u.uCamFlip, S.flipX ? 1 : -1);
+      gl.uniform1f(u.uFaceZ, E.z);
+      gl.uniform1f(u.uSpread, P.spread);
+      gl.uniform1f(u.uCamSat, P.camSat);
+    }
+    if (field) {
+      gl.activeTexture(gl.TEXTURE1);
+      gl.bindTexture(gl.TEXTURE_2D, field.texture);
+      gl.uniform1i(u.uField, 1);
+      gl.uniform1f(u.uFieldN, field.n);
+      gl.activeTexture(gl.TEXTURE0);
+    }
   });
 
-  const showDot = S.track && S.showDot && targetEye;
-  dot.style.display = showDot ? "block" : "none";
-  if (showDot) {
-    dot.style.left = (S.cal!.cx + E.x * ppm) + "px";
-    dot.style.top = (S.cal!.cy - E.y * ppm) + "px";
-  }
-
-  if (now - hudAt > 200) {
+  if (now - hudAt > 250) {
     hudAt = now;
-    const r = Math.hypot(E.x, E.y);
-    const tilt = Math.atan2(r, E.z) * 180 / Math.PI;
-    const az = (Math.atan2(E.y, E.x) * 180 / Math.PI + 360) % 360;
-    const head = S.track ? `[${trackStatus} 検出${detector.rate.toFixed(0)}/s] ` : "[手動] ";
-    let lv = "";
-    if (tiltOn && tiltSensor.active) {
-      const t = tiltNow();
-      lv = ` ／ 端末の傾き ${(Math.asin(Math.min(1, Math.hypot(t.x, t.y))) * 180 / Math.PI).toFixed(2)}°`;
-    }
-    hud.textContent = `${head}描画${fps.toFixed(0)}fps ／ 視点 x${E.x.toFixed(0)} y${E.y.toFixed(0)} z${E.z.toFixed(0)}mm 傾き${tilt.toFixed(1)}° 方向${az.toFixed(0)}°${lv}`;
+    const tiltDeg = Math.acos(Math.max(-1, Math.min(1, target.z))) * 180 / Math.PI;
+    const src = !tiltOn ? "（センサー未使用）" : tilt.compass ? " ／ 方位：地磁気" : " ／ 方位：ジャイロ（相対）";
+    hud.textContent = `描画${fps.toFixed(0)}fps ／ 端末の傾き ${tiltDeg.toFixed(1)}°${src}`;
   }
   requestAnimationFrame(frame);
 }
 
-resize(); syncInputs();
+resize(); sync();
+if (P.ballPat === 4) void startCamera();
 requestAnimationFrame(frame);

@@ -76,18 +76,3 @@ export class TiltSensor {
     this.active = false;
   }
 }
-
-/** 気泡の動き：バネとダンパーで目標位置に追従させる（液体の中の気泡らしい遅れ） */
-export class Bubble {
-  x = 0; y = 0; vx = 0; vy = 0;
-  step(tx: number, ty: number, dt: number, omega = 14, zeta = 0.8) {
-    // フレームが遅れても発散しないよう、細かい刻みで積分する
-    const n = Math.max(1, Math.ceil(dt / (1 / 240))), h = dt / n;
-    for (let i = 0; i < n; i++) {
-      const ax = omega * omega * (tx - this.x) - 2 * zeta * omega * this.vx;
-      const ay = omega * omega * (ty - this.y) - 2 * zeta * omega * this.vy;
-      this.vx += ax * h; this.vy += ay * h;
-      this.x += this.vx * h; this.y += this.vy * h;
-    }
-  }
-}

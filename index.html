@@ -9,117 +9,116 @@
 <body>
 <canvas id="gl"></canvas>
 <div id="ring"></div>
-<div id="dot"></div>
-<video id="cam" playsinline muted></video>
 <button id="show" aria-label="パネルを表示">⚙</button>
 
 <div id="ui">
   <div class="row">
     <button id="bCal">位置合わせ</button>
-    <button id="bCorr">補正</button>
-    <button id="bSpin">自転</button>
+    <button id="bTilt">傾きセンサーを有効にする</button>
     <button id="bFull">全画面</button>
     <button id="bHide">隠す</button>
-    <a class="btn" href="./sphere.html">ガラス球モードへ</a>
   </div>
   <div class="row">
-    <select id="pattern">
-      <option value="0">経緯線</option>
-      <option value="1">チェッカー</option>
-      <option value="2">架空の惑星</option>
-      <option value="3">画像（正距円筒）</option>
-      <option value="4">水準器</option>
-      <option value="5">光の指針</option>
-      <option value="6">眼球</option>
+    <select id="ballPat">
+      <option value="0">小球：経緯線</option>
+      <option value="1">小球：チェッカー</option>
+      <option value="2">小球：無地（陶器）</option>
+      <option value="3">小球：チューリングパターン</option>
+      <option value="4">小球：鏡面球（インカメラの映り込み）</option>
+      <option value="5">小球：天球（東京から見た天体とアスペクト）</option>
     </select>
-    <button id="bImg">画像を選ぶ…</button>
-    <input id="file" type="file" accept="image/*">
+    <select id="wallPat">
+      <option value="0">内壁：無地</option>
+      <option value="1">内壁：方眼</option>
+      <option value="2">内壁：経線（上下端が極）</option>
+      <option value="3">内壁：縦横の格子（上下端・左右端が極の経線）</option>
+    </select>
   </div>
-  <div class="hint" id="hint">「位置合わせ」を押し、黄色い円をドラッグ（移動）とピンチ（拡大縮小）でドームの縁に合わせてください。</div>
+  <div class="hint" id="hint">薄いガラスの球の中が空気で、中心に小球が浮かんでいる見立てです（実物のドームのレンズ効果は打ち消して描きます）。画面に正対して見る前提で、顔の追跡は使いません。傾きセンサーを有効にすると、小球は重力に対して水平を保ち、光も部屋に固定されます。</div>
+  <div class="hud" id="hud">—</div>
 
   <details open>
-    <summary>カメラ追跡</summary>
-    <div class="row">
-      <button id="bTrack">追跡を開始</button>
-      <select id="eyeMode">
-        <option value="mid">両目の中点</option>
-        <option value="left">左目</option>
-        <option value="right">右目</option>
-        <option value="head">頭の中心</option>
-      </select>
-      <button id="bFlip">左右反転</button>
+    <summary>中身</summary>
+    <label class="s">小球の大きさ<input id="ratio" type="range" min="0.2" max="0.92" step="0.01"><output></output></label>
+    <label class="s">見る距離<input id="D" type="range" min="100" max="800" step="10"><output></output></label>
+  </details>
+
+  <details open>
+    <summary>光</summary>
+    <label class="s">光の高さ<input id="lightElev" type="range" min="10" max="89" step="1"><output></output></label>
+    <div id="lightNoSensor">
+      <label class="s">光の方向<input id="lightAz" type="range" min="0" max="355" step="5"><output></output></label>
+      <div class="hint">画面上で光が来る向き（右が 0°、反時計回り。左上が 135°）。</div>
     </div>
-    <div class="hud" id="hud">—</div>
-    <label class="s">感度<input id="gain" type="range" min="0" max="1.5" step="0.05"><output></output></label>
-    <label class="s">頭の奥行き<input id="headDepth" type="range" min="0" max="150" step="5"><output></output></label>
-    <div class="hint">頭の奥行き＝「頭の中心」モードで、両目の間から首の回転軸までの距離。0 にすると両目の中点と同じになります。</div>
+    <div id="lightSensor">
+      <label class="s">光の方位<input id="lightBearing" type="range" min="0" max="359" step="1"><output></output></label>
+      <div class="row"><button id="bLightHere">スマホの上端を照明に向けて、ここを押す</button></div>
+      <div class="hint">傾きセンサー使用中は、光は部屋に固定されます（方位は北から時計回り）。部屋の照明にそろえるには、スマホの上端を照明の方へ向けてボタンを押してください。</div>
+    </div>
+  </details>
+
+  <details id="orientPanel">
+    <summary>小球の向き</summary>
+    <label class="s">上に来る緯度<input id="lat" type="range" min="-90" max="90" step="1"><output></output></label>
+    <label class="s">自転の速さ<input id="spd" type="range" min="-60" max="60" step="1"><output></output></label>
+    <label class="s">小球の追従<input id="followTau" type="range" min="0.2" max="10" step="0.1"><output></output></label>
+    <div class="hint">小球の追従＝傾きセンサー使用中にスマホを水平に回したとき、小球が追いつくまでの時間。</div>
+  </details>
+
+  <details id="mirrorPanel">
+    <summary>鏡面球</summary>
+    <label class="s">映り込みの広がり<input id="spread" type="range" min="1" max="4" step="0.05"><output></output></label>
+    <label class="s">映像の彩度<input id="camSat" type="range" min="0" max="1" step="0.05"><output></output></label>
     <label class="s">カメラ位置 横<input id="camX" type="range" min="-40" max="40" step="0.5"><output></output></label>
     <label class="s">カメラ位置 縦<input id="camY" type="range" min="0" max="150" step="0.5"><output></output></label>
-    <div class="row"><button id="bCamEst">全画面からカメラ位置を推定</button></div>
-    <label class="s">校正距離<input id="calibD" type="range" min="150" max="600" step="5"><output></output></label>
-    <div class="row"><button id="bCalib">この距離で距離を校正</button></div>
-    <div class="row">
-      <button id="bDot">目のマーカー</button>
-      <button id="bCamView">カメラ映像</button>
-    </div>
-    <div class="hint">カメラ位置＝ドームの中心から見たフロントカメラの位置（上が＋）。校正距離＝目から画面までを定規で測った値。その姿勢でボタンを押します。</div>
+    <label class="s">カメラの画角<input id="camFov" type="range" min="40" max="120" step="1"><output></output></label>
+    <div class="row"><button id="bFlip">左右反転</button></div>
+    <div class="hint">カメラ位置＝ドームの中心から見たインカメラの位置（上が＋）。画角＝映像の長辺方向の画角。顔が球の中心からずれて映るときはカメラ位置を、頭を動かしたとき映り込みが逆に動くときは左右反転を調整してください。</div>
+    <div class="hint">映り込みの広がり：1 は物理どおり（カメラの映像は球の中央だけ）。大きくすると映像が球の縁まで広がり、エッシャーの自画像のように部屋全体が映った見え方になります。映像の彩度を 0 にすると白黒になります。</div>
   </details>
 
-  <details>
-    <summary>水準器</summary>
+  <details id="skyPanel">
+    <summary>天球</summary>
     <div class="row">
-      <button id="bTilt">傾きセンサーを有効にする</button>
-      <button id="bBubbleAll">他の模様にも気泡</button>
-    </div>
-    <label class="s">気泡の感度<input id="levelGain" type="range" min="1" max="40" step="0.5"><output></output></label>
-    <div class="row">
-      <button id="bZero1">ゼロ点合わせ 1回目</button>
-      <button id="bZero2">180°回して 2回目</button>
-      <button id="bZeroReset">ゼロ点を戻す</button>
-    </div>
-    <div class="hint">目盛りの円は内側から傾き 0.5°・1°・2°。感度 1 はドームと同じ半径の本物の気泡管と同じ動き方です。ゼロ点合わせ：平らな所に置いて 1回目、その場で 180° 回して 2回目を押します。</div>
-  </details>
-
-  <details>
-    <summary>床と光</summary>
-    <div class="row">
-      <button id="bFloor">床と影</button>
-      <button id="bShade">ドームの陰影</button>
-    </div>
-    <label class="s">光の方向<input id="lightAz" type="range" min="0" max="355" step="5"><output></output></label>
-    <label class="s">光の高さ<input id="lightElev" type="range" min="10" max="85" step="1"><output></output></label>
-    <div class="hint">光の方向は画面上で右が 0°、反時計回り（左上が 135°）。</div>
-  </details>
-
-  <details>
-    <summary>眼球</summary>
-    <div class="row">
-      <select id="irisType">
-        <option value="0">茶色の瞳</option>
-        <option value="1">青い瞳</option>
-        <option value="2">緑の瞳</option>
-        <option value="3">猫の目</option>
+      <select id="skyMode">
+        <option value="now">現在時刻</option>
+        <option value="set">日時を指定（日本時間）</option>
       </select>
-      <button id="bLids">まぶた</button>
+      <input id="skyTime" type="datetime-local" step="60">
+      <button id="bSkyNow">今にする</button>
     </div>
-    <label class="s">瞳孔<input id="pupil" type="range" min="0.15" max="0.75" step="0.01"><output></output></label>
-    <div class="hint">カメラ追跡中は、あなたの目（両目の中点）を見つめ返します。追跡オフのときは手動の視点の方向を見ます。</div>
+    <label class="s">地平線下の暗さ<input id="belowDark" type="range" min="0" max="1" step="0.05"><output></output></label>
+    <div class="hint">中心が観測者（東京）。緑の目盛りが地平線の東西南北（赤が北）、金色の帯が黄道（白い目盛りが春分点、30° ごとに十二宮の区切り）、青い線が天の赤道と地軸です。地平線より下の半球は暗く表示します。傾きセンサーを有効にすると、実際の地平線と方角にそろいます。アスペクトの線は 合＝金、六分＝水色、矩＝橙、三分＝青、衝＝赤で、正確な角度に近いほど濃く太くなります（オーブ 8°、太陽・月が絡むと 10°）。</div>
+    <div class="info" id="skyInfo"></div>
   </details>
 
-  <details>
-    <summary>光の指針</summary>
-    <div class="hint">ドーム底面の中心から、指定した方位・仰角へ光が伸びます。向きは「水準器」欄の傾きセンサーを有効にすると、端末の向きに合わせて地球に対して固定されます。</div>
-    <label class="s">指す方位<input id="beamBearing" type="range" min="0" max="359" step="1"><output></output></label>
-    <label class="s">仰角<input id="beamElev" type="range" min="-10" max="80" step="1"><output></output></label>
-    <label class="s">方位の補正<input id="northOffset" type="range" min="-180" max="180" step="1"><output></output></label>
-    <div class="row"><button id="bNorthHere">端末の上端が向いている方を北にする</button></div>
-  </details>
-
-  <details>
-    <summary>手動の視点（追跡オフのとき）</summary>
-    <label class="s">見る距離<input id="D" type="range" min="100" max="800" step="10"><output></output></label>
-    <label class="s">視点の傾き<input id="tilt" type="range" min="0" max="60" step="1"><output></output></label>
-    <label class="s">傾きの方向<input id="az" type="range" min="0" max="355" step="5"><output></output></label>
+  <details id="rdPanel">
+    <summary>チューリングパターン</summary>
+    <div class="row">
+      <button id="bRdReset">種をまき直す</button>
+      <select id="rdRes">
+        <option value="128">模様：大きめ</option>
+        <option value="192">模様：普通</option>
+        <option value="256">模様：細かい</option>
+      </select>
+    </div>
+    <label class="s">進む速さ<input id="rdSteps" type="range" min="0" max="40" step="1"><output></output></label>
+    <div class="row"><span class="lbl">模様 A</span><select id="rdPresetA"></select></div>
+    <label class="s">A 供給率<input id="rdFA" type="range" min="0.005" max="0.09" step="0.0005"><output></output></label>
+    <label class="s">A 除去率<input id="rdKA" type="range" min="0.03" max="0.075" step="0.0005"><output></output></label>
+    <div class="row">
+      <span class="lbl">場所ごとの変化</span>
+      <select id="rdVary">
+        <option value="0">なし（全体が A）</option>
+        <option value="1">あり（A と B を球の上で分ける）</option>
+      </select>
+    </div>
+    <div class="row"><span class="lbl">模様 B</span><select id="rdPresetB"></select></div>
+    <label class="s">B 供給率<input id="rdFB" type="range" min="0.005" max="0.09" step="0.0005"><output></output></label>
+    <label class="s">B 除去率<input id="rdKB" type="range" min="0.03" max="0.075" step="0.0005"><output></output></label>
+    <label class="s">境目の向き<input id="rdAxisTilt" type="range" min="0" max="90" step="1"><output></output></label>
+    <label class="s">移り変わりの幅<input id="rdBlend" type="range" min="0.02" max="1" step="0.01"><output></output></label>
+    <div class="hint">A は球の「軸の＋側」、B は反対側に育ちます。境目の向き 0° は北が A・南が B（上から見ると A ばかり）、90° は境目が真上を通り、上から A と B の両方が見えます。移り変わりの幅を広げると、A から B へ連続的に変化する帯になります。値を変えると、今ある模様がその場で育ち直します。</div>
   </details>
 
   <details>
@@ -135,15 +134,7 @@
     </select><span></span></label>
     <label class="s">層の厚み<input id="gap" type="range" min="0" max="2" step="0.05"><output></output></label>
     <label class="s">カバーガラス<input id="glass" type="range" min="0" max="2" step="0.05"><output></output></label>
-    <div class="hint">カバーガラス＝画面表面から画素までの厚み（屈折率1.50として計算）。</div>
   </details>
-
-  <details>
-    <summary>地球儀の向き</summary>
-    <label class="s">中心の緯度<input id="lat" type="range" min="-90" max="90" step="1"><output></output></label>
-    <label class="s">自転の速さ<input id="spd" type="range" min="-60" max="60" step="1"><output></output></label>
-  </details>
-  <div class="row"><button id="bReset">設定をリセット</button></div>
 </div>
 <script type="module" src="./src/main.ts"></script>
 </body>
