@@ -35,7 +35,8 @@ const saveAll = () => { save(S); try { localStorage.setItem(PKEY, JSON.stringify
 // ---------- 描画 ----------
 const canvas = $<HTMLCanvasElement>("gl");
 let renderer: Renderer;
-try { renderer = new Renderer(canvas, SPHERE_FS, ["uInnerR", "uBx", "uBy", "uBz", "uBallPat", "uWallPat", "uField", "uFieldN"]); }
+try { renderer = new Renderer(canvas, SPHERE_FS, ["uInnerR", "uBx", "uBy", "uBz", "uBallPat", "uWallPat", "uField", "uFieldN",
+    "uCam", "uCamOn", "uCamPos", "uCamF", "uCamSize", "uCamFlip", "uFaceZ"]); }
 catch (e) { hint.textContent = "WebGL2 が使えないため表示できません。"; throw e; }
 
 let W = 0, H = 0;
@@ -106,6 +107,47 @@ const pKeys: PKey[] = ["ratio", "lat", "spd", "lightAz", "lightElev", "D", "ligh
 const fmt = (k: string, v: number) =>
   (k === "n" || k === "ratio" || k === "rdBlend" ? v.toFixed(2) : k.startsWith("rdF") || k.startsWith("rdK") ? v.toFixed(4) : String(v)) + units[k];
 
+// ---------- 鏡面球に映すインカメラの映像 ----------
+const camVideo = document.createElement("video");
+camVideo.muted = true; camVideo.playsInline = true;
+let camStream: MediaStream | null = null;
+let camTex: WebGLTexture | null = null;
+async function startCamera() {
+  if (camStream) return;
+  try {
+    camStream = await navigator.mediaDevices.getUserMedia({
+      video: { facingMode: "user", width: { ideal: 640 }, height: { ideal: 480 } }, audio: false,
+    });
+    camVideo.srcObject = camStream;
+    await camVideo.play();
+  } catch (e) {
+    camStream = null;
+    hint.textContent = "カメラを起動できませんでした：" + (e instanceof Error ? e.message : String(e));
+  }
+}
+function stopCamera() {
+  camStream?.getTracks().forEach(t => t.stop());
+  camStream = null; camVideo.srcObject = null;
+}
+/** 最新の映像フレームをテクスチャに送る。映像がなければ false */
+function updateCamTexture(gl: WebGL2RenderingContext): boolean {
+  if (!camStream || camVideo.readyState < 2) return false;
+  if (!camTex) {
+    camTex = gl.createTexture()!;
+    gl.bindTexture(gl.TEXTURE_2D, camTex);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+  }
+  gl.activeTexture(gl.TEXTURE2);
+  gl.bindTexture(gl.TEXTURE_2D, camTex);
+  gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, false);
+  gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, camVideo);
+  gl.activeTexture(gl.TEXTURE0);
+  return true;
+}
+
 // ---------- チューリングパターン ----------
 let rd: ReactionDiffusion | null = null;
 function ensureRD(): ReactionDiffusion | null {
@@ -157,6 +199,7 @@ $<HTMLSelectElement>("n2").addEventListener("change", e => { S.n2 = parseFloat((
 $<HTMLSelectElement>("ballPat").addEventListener("change", e => {
   P.ballPat = parseInt((e.target as HTMLSelectElement).value, 10); saveAll();
   if (P.ballPat === 3) ($("rdPanel") as HTMLDetailsElement).open = true;
+  if (P.ballPat === 4) void startCamera(); else stopCamera();
 });
 $<HTMLSelectElement>("rdRes").addEventListener("change", e => {
   P.rdRes = parseInt((e.target as HTMLSelectElement).value, 10); saveAll();
@@ -292,6 +335,18 @@ function frame(now: number) {
     gl.uniform3f(u.uBz, zb.x, zb.y, zb.z);
     gl.uniform1i(u.uBallPat, P.ballPat);
     gl.uniform1i(u.uWallPat, P.wallPat);
+    // 鏡面球：カメラ位置・画角・左右の向きは表面モードの設定を使う
+    const camOn = P.ballPat === 4 && updateCamTexture(gl);
+    gl.uniform1i(u.uCamOn, camOn ? 1 : 0);
+    gl.uniform1i(u.uCam, 2);
+    if (camOn) {
+      const w = camVideo.videoWidth, h = camVideo.videoHeight;
+      gl.uniform3f(u.uCamPos, S.camX, S.camY, S.glass);
+      gl.uniform1f(u.uCamF, S.fxRatio * Math.max(w, h));
+      gl.uniform2f(u.uCamSize, w, h);
+      gl.uniform1f(u.uCamFlip, S.flipX ? 1 : -1);
+      gl.uniform1f(u.uFaceZ, E.z);
+    }
     if (field) {
       gl.activeTexture(gl.TEXTURE1);
       gl.bindTexture(gl.TEXTURE_2D, field.texture);
@@ -311,4 +366,5 @@ function frame(now: number) {
 }
 
 resize(); sync();
+if (P.ballPat === 4) void startCamera();
 requestAnimationFrame(frame);
