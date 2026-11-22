@@ -25,7 +25,8 @@ uniform vec3 uBodyDir[7]; uniform vec3 uBodyCol[7]; uniform float uBodySize[7];
 uniform vec3 uAspA[21]; uniform vec3 uAspB[21]; uniform vec4 uAspC[21]; uniform int uAspN;
 uniform vec3 uEc0, uEc90, uEcN, uNcp;
 uniform float uShadowK;              // 小球が内壁に落とす影の濃さ
-uniform float uBelowDark;            // 天球の地平線より下を暗くする度合い（0〜1、1 で不透明に近い）
+uniform float uBelowDark;
+uniform int uWireN;                  // 内壁の金属線の本数            // 天球の地平線より下を暗くする度合い（0〜1、1 で不透明に近い）
 uniform int uWallPat;                // 0 無地、1 方眼、2 経線（上下端が極）、3 縦横の格子（上下端・左右端が極の経線）
 uniform vec3 uLight;                 // 光の来る向き（端末座標、単位ベクトル）
 uniform vec3 uEye;                   // 視点（頂点シェーダと共通）
@@ -103,7 +104,7 @@ vec3 wallShade(vec3 W, vec3 L){
     float g1 = max(lineMask(abs(fract(W.x + 0.5) - 0.5), w), lineMask(abs(fract(W.y + 0.5) - 0.5), w)) * 0.25 * (1.0 - smoothstep(0.12, 0.35, w));
     float g5 = max(lineMask(abs(fract(W.x / 5.0 + 0.5) - 0.5) * 5.0, w * 1.5), lineMask(abs(fract(W.y / 5.0 + 0.5) - 0.5) * 5.0, w * 1.5)) * 0.6 * (1.0 - smoothstep(1.0, 2.5, w));
     wall = mix(vec3(0.90, 0.90, 0.86), vec3(0.30, 0.55, 0.52), max(g1, g5));
-  } else if (uWallPat >= 2) {
+  } else if (uWallPat == 2 || uWallPat == 3) {
     // 外殻の球の経線。底面の円の上端・下端（画面の y 方向の両端）を極とし、
     // 地球儀を真横から見たように縦の線を引く：y 軸を含む面との交線＝ y 軸まわりの角度が一定の線。
     // 格子では、左右端（x 方向の両端）を極とする経線も重ねる。角度は底の極（真下）を 0° とする
@@ -137,7 +138,38 @@ vec3 wallShade(vec3 W, vec3 L){
   }
   // 深い所ほど暗く（光が届きにくい）
   float depth = clamp((uZb - W.z) / uR, 0.0, 1.0);
-  return wall * (0.14 + 0.86 * lam * (1.0 - 0.75 * sh)) * mix(1.0, 0.7, depth);
+  vec3 col = wall * (0.14 + 0.86 * lam * (1.0 - 0.75 * sh)) * mix(1.0, 0.7, depth);
+  if (uWallPat == 4) {
+    // 金属線（縦）：実物と同じく、上下端を極とする経線に沿って N 本の細い金属線を張る。
+    // 線の断面を円柱とみなして、明るい照りと暗い縁を付け、光と反対側の内壁に細い影を落とす
+    vec3 q = normalize(W - C);
+    float lonY = atan(q.x, -q.z);                       // 上下端が極の経度（真下が 0）
+    float sp = PI / float(uWireN + 1);                  // 線の間隔
+    // 本数が偶数でも中央対称になるよう、線の位置は (k − (N−1)/2)·sp
+    float k = floor(lonY / sp + float(uWireN - 1) * 0.5 + 0.5);
+    k = clamp(k, 0.0, float(uWireN - 1));
+    float wireLon = (k - float(uWireN - 1) * 0.5) * sp;
+    float r = 0.22 / uR;                                // 線の太さ（半径 0.22mm）を角度に
+    float d = (lonY - wireLon) / r;                     // 線の中心からの距離（半径単位）
+    // 経度が増える向き（内壁の接線）
+    vec3 side = normalize(cross(vec3(0.0, 1.0, 0.0), q));
+    // 影：光の接線成分と反対側に少しずらした位置に、ぼけた影
+    float shift = -dot(L, side) * 1.8;
+    float shadow = exp(-pow((d - shift) / 1.6, 2.0)) * 0.55 * max(dot(n, L), 0.0);
+    col *= 1.0 - shadow;
+    if (abs(d) < 1.0) {
+      vec3 nw = normalize(n * sqrt(1.0 - d * d) - side * d);   // 円柱の表面の法線（内壁から見て手前向き）
+      vec3 V = normalize(uEye - W);
+      vec3 H = normalize(L + V);
+      float dif = max(dot(nw, L), 0.0);
+      float spc = pow(max(dot(nw, H), 0.0), 60.0);
+      vec3 metal = vec3(0.62, 0.63, 0.66);
+      vec3 wc = metal * (0.12 + 0.55 * dif) + vec3(1.0) * spc * 1.1;
+      float edge = smoothstep(0.75, 1.0, abs(d));
+      col = mix(wc, col, edge);
+    }
+  }
+  return col;
 }
 
 // 鏡面球に映る景色：点 X から方向 r へ進む反射光線の先

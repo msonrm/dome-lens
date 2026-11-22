@@ -52,7 +52,7 @@ const canvas = $<HTMLCanvasElement>("gl");
 let renderer: Renderer;
 try { renderer = new Renderer(canvas, SPHERE_FS, ["uInnerR", "uBx", "uBy", "uBz", "uBallPat", "uWallPat", "uField", "uFieldN",
     "uCam", "uCamOn", "uCamPos", "uCamF", "uCamSize", "uCamFlip", "uFaceZ", "uSpread", "uCamSat",
-    "uBodyDir", "uBodyCol", "uBodySize", "uAspA", "uAspB", "uAspC", "uAspN", "uEc0", "uEc90", "uEcN", "uNcp", "uShadowK", "uBelowDark"]); }
+    "uBodyDir", "uBodyCol", "uBodySize", "uAspA", "uAspB", "uAspC", "uAspN", "uEc0", "uEc90", "uEcN", "uNcp", "uShadowK", "uBelowDark", "uWireN"]); }
 catch (e) { hint.textContent = "WebGL2 が使えないため表示できません。"; throw e; }
 
 let W = 0, H = 0;
@@ -510,6 +510,7 @@ function frame(now: number) {
     gl.uniform3f(u.uBz, zbR.x, zbR.y, zbR.z);
     gl.uniform1i(u.uBallPat, P.ballPat);
     gl.uniform1i(u.uWallPat, P.wallPat);
+    gl.uniform1i(u.uWireN, wires.pads.length || 5);   // 登録した線の本数（未登録なら 5 本）
     gl.uniform1f(u.uShadowK, P.ballPat === 5 ? 0.3 : 1.0);   // 天球は半透明なので影は薄く
     if (P.ballPat === 5 && sky) {
       const flat = (vs: number[][]) => new Float32Array(vs.flat());
