@@ -239,7 +239,7 @@ function sync() {
   $("camFov").parentElement!.querySelector("output")!.textContent = ratioToFov(S.fxRatio) + "°";
   // 選んでいる模様とセンサーの状態に関係のある項目だけ見せる
   const show = (id: string, on: boolean) => { $(id).style.display = on ? "" : "none"; };
-  show("orientPanel", P.ballPat === 0 || P.ballPat === 1 || P.ballPat === 3);
+  show("orientRows", P.ballPat === 0 || P.ballPat === 1 || P.ballPat === 3);
   show("mirrorPanel", P.ballPat === 4);
   show("skyPanel", P.ballPat === 5);
   show("rdPanel", P.ballPat === 3);
