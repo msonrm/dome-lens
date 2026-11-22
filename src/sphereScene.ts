@@ -140,25 +140,29 @@ vec3 mirrorEnv(vec3 X, vec3 r, vec3 L){
   vec3 W = X + r * max(hs.y, 0.0);
   if (W.z <= uZb + 0.01) return wallShade(W, L);
   // 上半分（ガラス）から外へ抜ける：インカメラの映像を映す。
-  // 顔（見る人）は高さ uFaceZ の平面上にあるとみなし、その点をカメラで写した位置を読む
+  // 周囲の景色は、球の中心から「見る距離」だけ離れた大きな球面上にあるとみなす（顔もその上）。
+  // 反射光線がその球面に当たる点を、カメラから見た方向に直して映像のどこを読むかを決める。
+  // カメラの画角を超える方向は、角度をなめらかに外へ伸ばした先を鏡映しの繰り返しで読み、
+  // 遠いほどぼかして暗くする（縁の1列を引き伸ばすと放射状の筋になるため）
   vec3 env = vec3(0.04, 0.045, 0.05);
-  if (uCamOn && r.z <= 0.02) {
-    // ほぼ水平に抜ける反射：映像の外側なので、その方向にあたる映像の縁の色を暗めに使う
-    vec2 d2 = normalize(vec2(r.x * uCamFlip, -r.y) + 1e-5);
-    env = texture(uCam, clamp(0.5 + 0.5 * d2, 0.002, 0.998)).rgb * 0.3;
-  }
-  if (uCamOn && r.z > 0.02) {
-    float t = (uFaceZ - X.z) / r.z;
-    vec3 Q = X + r * t;
+  if (uCamOn) {
+    float Renv = max(uFaceZ - C.z, 60.0);
+    vec2 he = hitSphere(X, r, C, Renv);
+    vec3 Q = X + r * max(he.y, 0.0);
     float Xc = (Q.x - uCamPos.x) * uCamFlip;
     float Yc = uCamPos.y - Q.y;
-    float Zc = max(Q.z - uCamPos.z, 1.0);
-    vec2 uv = vec2(Xc / Zc * uCamF / uCamSize.x + 0.5, Yc / Zc * uCamF / uCamSize.y + 0.5);
-    // 画角の外は縁の映像を引き伸ばし、離れるほど暗くする
-    vec2 over = max(max(-uv, uv - 1.0), 0.0);
-    float fade = exp(-length(over) * 2.5);
-    vec3 cam = texture(uCam, clamp(uv, 0.002, 0.998)).rgb;
-    env = mix(env, cam, 0.35 + 0.65 * fade) * mix(0.35, 1.0, fade);
+    float Zc = Q.z - uCamPos.z;
+    float th = atan(length(vec2(Xc, Yc)), Zc);          // カメラの正面からの角度
+    vec2 dir = normalize(vec2(Xc, Yc) + 1e-6);
+    float rho = uCamF * tan(min(th, radians(84.0)));    // ピンホールでの像の位置（画素）
+    vec2 uv = 0.5 + dir * rho / uCamSize;
+    // 映像の枠をはみ出した分（縦横それぞれ）だけ急速にぼかし、鏡映しの繰り返しが
+    // 「もう一つの顔」のようにくっきり出ないようにする
+    vec2 over = max(abs(uv - 0.5) - 0.5, 0.0);
+    float ov = length(over);
+    float lod = clamp(ov * 40.0, 0.0, 7.0);
+    vec3 cam = textureLod(uCam, uv, lod).rgb;
+    env = cam * mix(1.0, 0.55, smoothstep(0.0, 1.5, ov));
   }
   return env;
 }
@@ -183,7 +187,7 @@ void main(){
       vec3 r = reflect(rd, n);
       vec3 env = mirrorEnv(X, r, L);
       float fres = 0.82 + 0.18 * pow(1.0 - max(dot(n, V), 0.0), 5.0);
-      float sun = pow(max(dot(r, L), 0.0), 900.0) * 4.0;
+      float sun = pow(max(dot(r, L), 0.0), 1500.0) * 1.2;   // 実際の照明も映像に映るので控えめに
       col = env * fres * vec3(0.96, 0.96, 0.98) + vec3(sun);
     } else {
       // 小球：拡散＋鏡面反射（無地は陶器のように強めの照り）
