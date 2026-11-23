@@ -7,7 +7,7 @@ import { TiltSensor } from "./level";
 import { load, save, type Settings } from "./settings";
 import { ReactionDiffusion, RD_PRESETS } from "./rd";
 import { computeSky, signText, ASPECTS, type Sky } from "./sky";
-import { WireInput, rotateAbout, type Pad } from "./wires";
+import { WireInput, rotateAbout, rotateByVec, type Pad } from "./wires";
 
 const $ = <T extends HTMLElement = HTMLElement>(id: string) => document.getElementById(id) as T;
 const hint = $("hint");
@@ -126,23 +126,25 @@ function flashTouch(x: number, y: number) {
   setTimeout(() => el.remove(), 900);
 }
 function wireStatus(msg?: string) {
-  const reg = wires.registering ? `登録中：${wires.pads.length + 1} 本目の線に触れてください。` : "";
+  const reg = wires.registering ? `登録中：${wires.pads.length} 本登録済み。次の線に触れてください（順番は自由）。` : "";
   $("wireInfo").textContent = msg ?? (reg || (wires.pads.length ? `登録済み：${wires.pads.length} 本` : "未登録"));
 }
 wires.onPad = k => {
   const el = padEls[k]; if (!el) return;
   el.classList.add("hit"); setTimeout(() => el.classList.remove("hit"), 300);
 };
-// 回転の状態
-let rollA = 0, rollAv = 0;                                 // 揺れて戻る（経緯線・チェッカー・無地）
-let rollBv = 0;                                            // 回ったまま（チューリングパターン）
+// 回転の状態。回転は「画面の面内の軸×角度」のベクトルで表す。
+// 向き d へ頂上が転がる回転の軸は z×d ＝ (−d.y, d.x)
+const rollA = { x: 0, y: 0 }, rollAv = { x: 0, y: 0 };   // 揺れて戻る（経緯線・チェッカー・無地）
+const rollBv = { x: 0, y: 0 };                            // 回ったまま（チューリングパターン）
 let rollB = { x: { x: 1, y: 0, z: 0 }, y: { x: 0, y: 1, z: 0 }, z: { x: 0, y: 0, z: 1 } };
-let skyPsi = 0, skyPsiV = 0;                               // 天球：天頂軸まわり
-wires.onSwipe = omega => {
+let skyPsi = 0, skyPsiV = 0;                              // 天球：天頂軸まわり
+wires.onImpulse = (d, omega) => {
   const w = omega * P.wireGain * (P.wireInvert ? -1 : 1);
-  if (P.ballPat === 3) rollBv += w;
-  else if (P.ballPat === 5) skyPsiV += w;
-  else if (P.ballPat !== 4) rollAv += w;
+  const ax = -d.y * w, ay = d.x * w;
+  if (P.ballPat === 3) { rollBv.x += ax; rollBv.y += ay; }
+  else if (P.ballPat === 5) skyPsiV += d.x * w;           // 天球：手前側がタップの左右へ動く向きに回す
+  else if (P.ballPat !== 4) { rollAv.x += ax; rollAv.y += ay; }
 };
 function onWireTouch(e: PointerEvent) {
   const r = wires.touch(e.clientX, e.clientY, e.timeStamp || performance.now());
@@ -440,24 +442,26 @@ function frame(now: number) {
     lightTarget = { x: Math.cos(le) * Math.cos(la), y: Math.cos(le) * Math.sin(la), z: Math.sin(le) };
   }
   let yb = cross(zb, xb);
-  // 金属線でなぞった回転を加える
+  // 金属線で弾いた・なぞった回転を加える
+  wires.center = { x: S.cal!.cx, y: S.cal!.cy };
   {
-    // 揺れて戻る：重い側が下の球が転がされ、重さで元に戻る（減衰振動）
+    // 揺れて戻る：重い側が下の球が転がされ、重さで元に戻る（減衰振動、面内の2成分それぞれ）
     const w0 = 2 * Math.PI * 0.8, zeta = 0.12;
     const n = Math.max(1, Math.ceil(dt / (1 / 240))), h = dt / n;
-    for (let i = 0; i < n; i++) { rollAv += (-w0 * w0 * rollA - 2 * zeta * w0 * rollAv) * h; rollA += rollAv * h; }
+    for (let i = 0; i < n; i++) {
+      rollAv.x += (-w0 * w0 * rollA.x - 2 * zeta * w0 * rollAv.x) * h; rollA.x += rollAv.x * h;
+      rollAv.y += (-w0 * w0 * rollA.y - 2 * zeta * w0 * rollAv.y) * h; rollA.y += rollAv.y * h;
+    }
     // 回ったまま：摩擦でゆっくり止まる。回転は端末に固定した座標で積み重ねる
-    const dB = rollBv * dt; rollBv *= Math.exp(-dt / 1.5);
-    const Y = { x: 0, y: 1, z: 0 };
-    if (Math.abs(dB) > 1e-6) rollB = { x: norm(rotateAbout(rollB.x, Y, dB)), y: norm(rotateAbout(rollB.y, Y, dB)), z: norm(rotateAbout(rollB.z, Y, dB)) };
+    const rx = rollBv.x * dt, ry = rollBv.y * dt;
+    const fr = Math.exp(-dt / 1.5); rollBv.x *= fr; rollBv.y *= fr;
+    if (Math.hypot(rx, ry) > 1e-7) rollB = { x: norm(rotateByVec(rollB.x, rx, ry)), y: norm(rotateByVec(rollB.y, rx, ry)), z: norm(rotateByVec(rollB.z, rx, ry)) };
     // 天球：天頂軸まわりに回し、摩擦で止まる
     skyPsi += skyPsiV * dt; skyPsiV *= Math.exp(-dt / 2.0);
   }
   let bx = xb, by = yb, bz = zb;
   if (P.ballPat === 0 || P.ballPat === 1 || P.ballPat === 2) {
-    // 線は画面の上下端を極とする経線なので、なぞると画面の y 軸まわりに転がる
-    const Y = { x: 0, y: 1, z: 0 };
-    bx = rotateAbout(xb, Y, rollA); by = rotateAbout(yb, Y, rollA); bz = rotateAbout(zb, Y, rollA);
+    bx = rotateByVec(xb, rollA.x, rollA.y); by = rotateByVec(yb, rollA.x, rollA.y); bz = rotateByVec(zb, rollA.x, rollA.y);
   } else if (P.ballPat === 3) {
     const M = rollB, ap = (v: Vec3) => ({ x: M.x.x * v.x + M.y.x * v.y + M.z.x * v.z, y: M.x.y * v.x + M.y.y * v.y + M.z.y * v.z, z: M.x.z * v.x + M.y.z * v.y + M.z.z * v.z });
     bx = ap(xb); by = ap(yb); bz = ap(zb);
